@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?oxygen RNGSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng" type="xml"?>
+<?oxygen SCHSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng"?>
+<article xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude"
+    xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0">
+    <title>Towards Improving Metaprogramming Facilities</title>
+    <para>Template Metaprogramming is a very difficult exercise for many C++ programmers. There are
+        a number of problems around it which ward off the typical C++ programmer who just wants to
+        get things done.</para>
+    <para>C++11 added a number of metaprogramming facilities. It added a rich set of template
+        metafunctions and metadata for classifying and operating on types. It also added standard
+        library support for <function>std::enable_if</function>. As C++ progresses, these features
+        are being improved. C++14 is slated to added <code>using</code> aliases for most of the
+        metafunctions, which makes using them much easier for those not familiar with
+        metaprogramming techniques. The constraints technical specification adds a superior
+        alternative to <function>std::enable_if</function>, which makes the use of that feature far
+        more acceptable.</para>
+    <para>But there is more that can be done.</para>
+    <para>The key to getting people to use metaprogramming is to make it not feel like
+        metaprogramming. Template metaprogramming (TMC++) feels awfully lot like a hack or a kludge.
+        It doesn't feel like regular C++; to accomplish things, you frequently have to do things in
+        a different way.</para>
+    <para>A great example of this is iterating over a container, performing some action on each
+        element in the sequence. In regular C++, you either use the <function>for_each</function>
+        algorithm or write a loop. In TMC++, to perform an operation on each element of a
+            <type>std::tuple</type>, you must use a recursive algorithm.</para>
+    <para>The importance of that difference is quite simply this. C++, as most programmers know it,
+        is an imperative programming language. Imperative programming languages use mutable data
+        variables, iteration as the primary method of operating on a sequence, and a variety of
+        other fundamental idioms and ways of thinking about solving problems. TMC++ is a
+            <emphasis>declarative</emphasis> programming language. Data is immutable, and recursion
+        is the only viable method of operating over a sequence of items.</para>
+    <para>Most C++ programmers understand imperative programming style. They know how it works and
+        they know how to operate within those constraints. They've been doing it for years.
+        Declarative programming is a very different beast, and getting into that style of
+        programming is a large hill to climb. They can dabble a bit in declarative programming, but
+        any serious use of TMC++ will feel increasingly like some foreign experience that they don't
+        want to get involved with.</para>
+    <para>The goal of the following features is to effectively make a declarative programming system
+        appear more like an imperative one. This will make getting into certain aspects of TMC++
+        easier for programmers unfamiliar with declarative programming.</para>
+    <para>In particular, this paper focuses on dealing with sequences of types. Variadic templates
+        gives a means to build type lists, but such lists can only be <quote>stored</quote> as a
+        template parameter pack. The only way to pass such a construct around is as an argument to a
+        function.</para>
+    <para>Consider that a function parameter pack can always be shoved into a
+            <type>std::tuple</type> easily enough:</para>
+    <programlisting language="cpp">auto tpl = std::make_tuple(pack...);</programlisting>
+    <para>Such an object can be stored anywhere, even in non-template code. But template parameter
+        pack, the list of types, cannot be recovered in any way once outside of template
+        code.</para>
+    <para>We can invent what we need by analogy. A function parameter pack is to a
+            <classname>std::tuple</classname> as a template parameter pack is to a
+            <classname>std::type_list</classname>. This object is a simple struct with no data
+        members. It provides a metafunction interface similar to <classname>std::tuple</classname>'s
+        for querying types from its list of types. And <classname>std::tuple</classname> will be
+        augmented with a metafunction for getting a <classname>type_list</classname> from the
+            <classname>tuple</classname>.</para>
+    <section>
+        <title>Operations, Algorithms, and Boost.Fusion</title>
+        <para>Now that we have a template parameter pack as an object which can be manipulated, we
+            need tools to manipulate it. We also need tools to manipulate the analog to function
+            parameter packs: <classname>tuple</classname>s.</para>
+        <formalpara>
+            <title>Fusion</title>
+            <para>But first, a digression into the world of Boost. The Fusion library is a
+                metaprogramming system that is designed to make operating over heterogeneous
+                sequences of values relatively easy. And it is effective at this task.</para>
+        </formalpara>
+        <para>Fusion does this in a way that is very similar to the way the so-called STL component
+            of the standard library works. STL divides its world into 3 kinds of components:
+            containers, algorithms, and iterators. Containers actually contain the storage for
+            values, but the containers are generally dumb. New elements can be inserted, old ones
+            removed, and so forth. But complex operations like sorting are (usually) external
+            functions.</para>
+        <para>These external operations are called algorithms, which can operate on any compatible
+            container type. This improves code reuse, since every container does not need its own
+                <function>sort</function> function.</para>
+        <para>The concept that makes the container/algorithm distinction possible is a means of
+            representing a data item and location within a container in a way that is, in a template
+            function, ignorant of the specific implementation of that container. This is done with a
+            concept called an iterator. Each container class provides its own iterators, and there
+            are several classes of iterators with various capabilities. Algorithms only operate on
+            iterators, not on containers, so they remain ignorant of the specific implementation of
+            any particular container.</para>
+        <para>One of the principle advantages of this is that it allows the user to define new
+            containers. As long as the user plays by the rules of STL and creates appropriate
+            iterators, then the existing algorithms can be used with new containers.</para>
+        <para>Boost.Fusion uses this concept to build its various utilities. There are different
+            kinds of heterogeneous containers of values. Some are sequence containers, others are
+            associative containers. There are iterators, which represent a position within a
+            container. With an iterator, one can query the value, advance to the next value or go
+            back to previous values. And there are algorithms which operate over iterators (they can
+            also take a container, and it will extract bracket iterators from it).</para>
+        <para>Like with STL, this abstraction makes it very easy to create new containers of
+            heterogeneous values. Indeed, one of Fusion's most ingenious features is the ability to
+            use a few macros to allow Fusion algorithms to work with a given struct/class. It can
+            even call accessors member functions to get/modify data.</para>
+        <para>But this comes with a cost: Fusion is <emphasis>gigantic.</emphasis> Merely #including
+            one of the Fusion headers will add full seconds to your compile time. STL's
+            container/iterator/algorithm distinction has a cost as well. However, this is a cost
+            that compiler optimizations can mitigate, to the point where using iterators on a
+                <classname>std::vector</classname> is no more costly than a regular for-loop (and
+            may even be faster).</para>
+        <para>Compiler optimizations cannot mitigate the costs of Fusion because the costs of Fusion
+            are compile-time. Once compiled, the overhead is usually pretty minimal; the performance
+            problem is at compile time. We cannot have a C++ standard library that inflicts such
+            slowdown on the user. One which no implementation can overcome.</para>
+        <sidebar>
+            <title>Can it?</title>
+            <para>I am not a metaprogramming expert, so I truly have no idea whether the burdens of
+                Fusion can be overcome via clever implementation. As I do not really understand how
+                Fusion's iterators and algorithms work from an implementation perspective, I cannot
+                say for certain that there is no cleaner way of getting around Fusion's compile-time
+                woes.</para>
+            <para>For example, Fusion is written against C++03, not C++11. As such, it relies in
+                large part on variadic macro hackery to do its stuff. It would be entirely possible
+                for a form of Fusion, rewritten to take advantage of all of C++11, to avoid much of
+                the compile-time burden.</para>
+        </sidebar>
+        <para>However, being able to use user-defined heterogeneous containers with these algorithms
+            would be a very useful thing to have. Therefore, this system will focus on doing so with
+            a minimum of overhead. The algorithms will access the container object via explicit
+            hooks, such that the system can use arbitrary heterogeneous containers. But these hooks
+            will not be complex Fusion-style iterators; they will be little more than the system
+            that <classname>std::tuple</classname> already provides.</para>
+        <para>Similarly, as there will be no iterators, the algorithms will always operate over the
+            entire range, unless they early-out. There is no means to specify a sub-range. Note that
+            there may be methods to create subranges based on indices. Also, this system will be
+            limited purely to sequential containers; Fusion allowed the use of a number of other
+            kinds of container types.</para>
+        <formalpara>
+            <title>Algorithm Types</title>
+            <para>The algorithms outlined by this system must work on at least two cases: operations
+                over a sequence of heterogeneous values, and operations over a sequence of
+                heterogeneous <emphasis>types</emphasis>. Furthermore, there are two ways to specify
+                such sequences. The user can provide a C++ object that provides the sequence, or the
+                user can provide an appropriate parameter pack expression.</para>
+        </formalpara>
+        <para>We want each algorithm to work on all of these cases. We do not want people to have to
+            do this:</para>
+        <programlisting language="cpp">std::for_each_element(std::tuple&lt;std::forward&lt;Params>(params)...>, metafunc);</programlisting>
+        <para>Simply to iterate over the template parameter pack given to this function. This
+            creates a (potentially) unnecessary instantiation of
+                <classname>std::type_list</classname>. Therefore, most algorithms will take four
+            forms; the four forms taking the input as one of the following:</para>
+        <orderedlist>
+            <listitem>
+                <para>Heterogeneous types in a template parameter pack expression.</para>
+            </listitem>
+            <listitem>
+                <para>Heterogeneous types in a <classname>std::type_list</classname>.</para>
+            </listitem>
+            <listitem>
+                <para>Heterogeneous values in a function parameter pack expression.</para>
+            </listitem>
+            <listitem>
+                <para>Heterogeneous values in an object which provides the appropriate iteration
+                    interface.</para>
+            </listitem>
+        </orderedlist>
+        <para>Note that the only user-defined argument type is the last one. While the user can
+            provide their own heterogeneous containers, users are required to use
+                <classname>std::type_list</classname> for all lists of types stored as objects. It
+            is a simple enough class that there should be little need for a user to provide a
+            different one.</para>
+        <para>The algorithms that operate over type sequences will be metafunctions. The user will
+            have to provide a template as a parameter, which will be the metafunction to call for
+            the various algorithm operations.</para>
+        <para>In C++11, parameter packs have to go at the end of an argument list. As such, we will
+            need to specify the function and other arguments before the parameter packs. This goes
+            against STL practice, but it is a necessity. To make the system consistent,
+                <emphasis>all</emphasis> algorithms will be ordered in the same way, with the other
+            arguments provided before the type/value sequence to be operated over.</para>
+        <formalpara>
+            <title>Element-wise vs. all-at-once</title>
+            <para>Parameter pack expressions, and particular function parameter pack expressions,
+                allow the user to do very interesting things. It allows the user to effectively and
+                easily implement algorithms without recursion in many cases. For example, consider
+                this implementation of <function>std::transform_value</function> over a parameter
+                pack:</para>
+        </formalpara>
+        <programlisting language="cpp">template&lt;typename Func, typename ...Args, template TupleTemplate = template std::tuple>
+auto transform_value(Func f, Args &amp;&amp;...args)
+{
+    using TupleType = TupleTemplate&lt;decltype(f(std::forward&lt;Args&amp;&amp;>(args)))...>;
+    return TupleType{f(std::forward&lt;Args&amp;&amp;>(args))...};
+}</programlisting>
+        <para>The corresponding implementation for the tuple version would require a lot of copying
+            or an object that could have its extra arguments constructed in other ways. It would
+            have to be recursive, and each recursion would have to create a new tuple that contained
+            the previous tuple plus an additional element. Or it would have to rely on
+            default-constructing elements. Or perhaps some other kind of internal construction
+            methodology.</para>
+        <para>Not really sure how to deal with that one.</para>
+    </section>
+    <section>
+        <title>Pain Points to focus Language Features</title>
+        <para>One of the larger pain points exposed by this library is the fact that tuples are not
+            functionally equivalent to template parameter packs. Calling a function on every member
+            of a parameter pack is easy, while doing so on every member of a tuple is less easy.
+            It's mostly about aggregating the return types; with a parameter pack, you can invoke
+            the function as an unpack operation, thus allowing you to aggregate returned values. You
+            can't do that with a tuple; you have to recursively apply everything.</para>
+        <para>In short, the ... operator cannot be applied to a tuple. And it would be really nice
+            to be able to. There are several possible features that could resolve this.</para>
+        <formalpara>
+            <title>Apply ... to tuples and type_lists</title>
+            <para>It could be possible to have the compiler generate the code for extracting the
+                elements of a tuple. Thus, the following code would just work:</para>
+        </formalpara>
+        <programlisting language="cpp">template&lt;typename Func, typename ...Args, template InputTuple, template TupleTemplate = template std::tuple>
+auto transform_value(Func f, InputTuple&lt;Args...> &amp;&amp;args)
+{
+    using TupleType = TupleTemplate&lt;decltype(f(std::forward&lt;Args&amp;&amp;>(args)))...>;
+    return TupleType{f(std::forward&lt;Args&amp;&amp;>(args))...};
+}</programlisting>
+        <para>This should also be able to be applied to user-defined objects, likely using the same
+            interface as this system. Basically, consider how the range-based for loop relies on the
+            standard library iterator concept.</para>
+        <para>One problem is that this feature would break any existing code that just so happens to
+            use a tuple in an unpack expression. Therefore, we can require a bit of preparation work
+            for this. That is, you can create a template or function parameter pack via the using
+            directive.</para>
+        <programlisting language="cpp">template&lt;typename Func, typename InputTyple, template TupleTemplate = template std::tuple>
+auto transform_value(Func f, InputTuple &amp;&amp;args)
+{
+    using ...TupleTypePack = type_list_t&lt;InputTuple>;
+    using ...ValuePack = args;
+    using TupleType = TupleTemplate&lt;decltype(f(std::forward&lt;TupleTypePack&amp;&amp;>(ValuePack)))...>;
+    return TupleType{f(std::forward&lt;TupleTypePack&amp;&amp;>(ValuePack)))...};
+}</programlisting>
+        <para/>
+    </section>
+</article>

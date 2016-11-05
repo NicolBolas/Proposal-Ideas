@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?oxygen RNGSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng" type="xml"?>
+<?oxygen SCHSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng"?>
+<article xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude"
+    xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0">
+    <title>Proposal Boilerplate</title>
+    <section>
+        <title>Introduction</title>
+        <para/>
+    </section>
+    <section>
+        <title>Motivation and Scope</title>
+        <para/>
+    </section>
+    <section>
+        <title>Design Overview</title>
+        <para/>
+        <para/>
+        <formalpara>
+            <title>Special Needs</title>
+            <para/>
+        </formalpara>
+        <para>class <classname>type_range</classname></para>
+        <para>This class represents a range of types. By analogy, a template function parameter pack
+            is to a <type>tuple</type> as a template parameter pack is to a <type>type_range</type>.
+            It stores the type information and has helpers similar to those of
+                <type>std::tuple</type> that allow enumeration of the types.</para>
+        <para>The <type>type_range</type> for a <type>tuple</type>'s type can be queried.</para>
+        <section>
+            <title>Needed Algorithms</title>
+            <para>Most of these algorithms are appropriate in several circumstances. However, it is
+                not possible to use overloading to deduce these cases, so we have to suffix the
+                functions appropriately.</para>
+            <glosslist>
+                <glossentry>
+                    <glossterm>type</glossterm>
+                    <glossdef>
+                        <para>This algorithm operates over a template parameter pack. This means
+                            that it operates over a series of types, not a series of values.</para>
+                        <para>These algorithms must be called with the template parameters
+                            explicitly laid out; you cannot provide these as function arguments. It
+                            calls the functor(s) with types by explicitly instantiation the
+                            operator() member function with a template argument.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>type_range</glossterm>
+                    <glossdef>
+                        <para>This algorithm operates over the types contained within a type
+                            range.</para>
+                        <para>These algorithms must be called with the tuple type explicitly as a
+                            template parameter; you cannot provide the tuple as a function argument.
+                            It calls the functor(s) with types by explicitly instantiation the
+                            operator() member function with a template argument.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>element</glossterm>
+                    <glossdef>
+                        <para>This algorithm operates over the values in a function parameter pack.
+                            The given functor(s) will be called with each parameter, forwarded via
+                                <function>std::forward</function> as appropriate.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>tuple_element</glossterm>
+                    <glossdef>
+                        <para>This algorithm operates over the members of a tuple. The given
+                            functor(s) will be called with these values as per normal for iterators
+                            and the like.</para>
+                    </glossdef>
+                </glossentry>
+            </glosslist>
+            <para>Each algorithm will have a version for all of the suffixes, except where stated.
+                Most of these algorithms have container analogs, but some do not.</para>
+            <glosslist>
+                <glossentry>
+                    <glossterm><function>for_each_</function></glossterm>
+                    <glossdef>
+                        <para>For each type in the given template parameter pack, call the given
+                            functor as appropriate.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>accumulate_</glossterm>
+                    <glossdef>
+                        <para>Given a starting value and a function that will take this value and
+                            each type/value. Works like <function>std::accumulate</function>.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>all_of_</glossterm>
+                    <glossdef>
+                        <para>Returns true if all of the types/values satisfy the predicate
+                            condition.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>any_of_</glossterm>
+                    <glossdef>
+                        <para>Returns true if any of the types/values satisfy the predicate
+                            condition.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>none_of_</glossterm>
+                    <glossdef>
+                        <para>Returns true if none of the types/values satisfy the predicate
+                            condition.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>count_</glossterm>
+                    <glossdef>
+                        <para>Returns the number of types/values that satisfy the predicate
+                            condition.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>equal_</glossterm>
+                    <glossdef>
+                        <para>Given two equal ranges, returns true if the corresponding types/values
+                            both satisfy the predicate condition. If no predicate is provided, then
+                            for types, it will use <function>std::is_same</function> to test
+                            equality. For values, it will use
+                            <function>operator==</function>.</para>
+                    </glossdef>
+                </glossentry>
+                <glossentry>
+                    <glossterm>is_permutation_</glossterm>
+                    <glossdef>
+                        <para>Given two equal ranges, returns true if there exists a permutation of
+                            one range such that <function>equal_*</function> of the permutation of
+                            that range and the other range returns true. Uses a predicate to test
+                            equality, or <function>std::is_same</function> for types and
+                                <function>operator==</function> for values.</para>
+                    </glossdef>
+                </glossentry>
+            </glosslist>
+        </section>
+    </section>
+    <section>
+        <title>Impact on the Standard</title>
+        <para/>
+    </section>
+    <section>
+        <title>Design Decisions</title>
+        <para/>
+    </section>
+    <section>
+        <title>Technical Specifications</title>
+        <para/>
+    </section>
+    <section>
+        <title>Acknowledgements</title>
+        <para/>
+    </section>
+    <section>
+        <title>References</title>
+        <para/>
+    </section>
+</article>

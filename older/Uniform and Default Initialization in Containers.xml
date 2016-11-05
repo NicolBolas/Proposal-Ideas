@@ -1,0 +1,524 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?oxygen RNGSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng" type="xml"?>
+<?oxygen SCHSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng"?>
+<article xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude"
+    xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0">
+    <title>Improved Container Initialization</title>
+    <section>
+        <title>Introduction</title>
+        <para>Uniform initialization can be used in almost all circumstances. However, there are
+            times when <literal>initializer_list</literal> constructors conflict with regular
+            constructors. In those cases, an extra argument is needed, which is of a different type
+            than other arguments, to disambiguate the call and correctly select one from the
+            other.</para>
+        <para>The difference between default initialization and value initialization in C++ is
+            important for performance in many circumstances. Many users restrict a class definition
+            to keep it within the “trivial” category deliberately to take advantage of essentially
+            free default construction. However, many standard library containers do not allow the
+            user to default initialize the contents of a class, forcing the user to value-initialize
+            objects unnecessarily.</para>
+    </section>
+    <section>
+        <title>Motivation and Scope</title>
+        <para>This proposal solves two different problems. They are both part of the same proposal
+            because they look very similar to the user in many cases and attempt to complement one
+            another.</para>
+        <section>
+            <title>Uniform Initialization Ambiguity</title>
+            <para>Uniform initialization is intended to be uniform, hence the name. However, because
+                uniform initialization ties into initializer_list initialization, it can cause
+                conflicts. Consider the following code.</para>
+            <programlisting>std::vector&lt;int> intVec1(43);
+std::vector&lt;int> intVec2{43};</programlisting>
+            <para>These look the same, and one would expect them to behave the same. But they are
+                not the same. <literal>intVec1</literal> is a vector of 43 value-constructed
+                integers. <literal>intVec2</literal> is a vector of a single integer, 43. The
+                wording of the standard dictates that the <literal>initializer_list</literal>
+                constructors always have priority when matching against a braced-init-list. And
+                since this is a <literal>vector&lt;int></literal>, the
+                    <literal>initializer_list</literal> constructor will be selected.</para>
+            <para>Indeed, there is absolutely no way to call the
+                    <literal>std::vector&lt;int>::vector(size_type)</literal> constructor with a
+                braced-init-list. There is no way to call the constructor that takes a
+                    <literal>size_type</literal> and an integer default either. If you use uniform
+                initialization with a <literal>vector&lt;int></literal>, you will always be using
+                the <literal>initializer_list</literal> constructor with these.</para>
+            <para>This also happens when attempting to use sized construction with an explicit value
+                to copy from:</para>
+            <programlisting>std::vector&lt;int> intVec1(43, 3); //43 element vector of 3's.
+std::vector&lt;int> intVec2{43, 3}; //2 element vector.</programlisting>
+            <para>This is not very uniform initialization.</para>
+        </section>
+        <section>
+            <title>Value Initialized Containers</title>
+            <para>Consider the following code.</para>
+            <programlisting>auto *largeArray = new std::array&lt;int, 50000000>;
+std::vector&lt;int> largeVector(50000000);</programlisting>
+            <para>One of these takes substantially longer than the other. They should not. They both
+                allocate roughly the same amount of memory. Yet the initialization of the
+                    <literal>vector</literal> takes much longer. With further profiling, we would
+                also discover that the <literal>vector</literal> creation's running time is linear
+                in the number of elements.</para>
+            <para>The reason for this is that <literal>vector</literal> is required to initialize
+                all of its arguments with
+                    <literal>allocator_traits&lt;Allocator>::construct</literal> for the all, which
+                will either call <literal>a.construct</literal> with an empty argument list, or
+                    <literal>new(memory) int()</literal>. Both of which will perform value
+                initialization on the contents.</para>
+            <para>While the relative time of value-initializing 50 million integers is not that
+                long, consider the following code design.</para>
+            <programlisting>int imageSize = width * height * 4;
+std::vector&lt;uint32_t> imageData(imageSize);
+FetchImageData(..., imageData.data(), imageSize);</programlisting>
+            <para>This is not uncommon. The above mimics behavior that might be found in a video or
+                image decompression system. It loads some image data internally, and decompresses it
+                into storage you provide. There are many APIs that expect you to pass in a pointer
+                and size in bytes, and they will fill them in. C++ users want to use a
+                    <literal>std::vector</literal> or <literal>std::string</literal> to allocate and
+                manage that memory. However, when they do so, they also get pointless value
+                initialization.</para>
+            <para>This often prompts users to do this instead:</para>
+            <programlisting>int imageSize = width * height * 4;
+std::unique_ptr&lt;uint32_t[]> pImageData{new uint32_t[imageSize]};
+FetchImageData(..., imageData.data(), imageSize);</programlisting>
+            <para>This provides the proper memory management, but absolutely none of the other
+                conveniences of <literal>std::vector</literal>. It doesn't even store the size
+                internally.</para>
+        </section>
+    </section>
+    <section>
+        <title>Design Overview</title>
+        <para>The general idea to solve both problems is to introduce functions with new arguments
+            to designate which kinds of things are being called. Part of the reason that these
+            proposals are linked is because they use the same mechanism, so the names and types of
+            constructs are similar in order to acknowledge the similarities.</para>
+        <para>The following overview focuses on <literal>std::vector</literal>, but they all of the
+            sequence containers (except for <literal>array</literal>, but including
+                <literal>basic_string</literal>) will have similar functions.</para>
+        <section>
+            <title>Default and Value Initialization</title>
+            <para>To allow default initialization of values implies that there should be an explicit
+                way to value-initialize members too. There are a lot of functions that only take a
+                value to copy into each value; only the main constructors have an overload
+                specifically for value-initialization. So we solve this problem while also
+                disambiguating the constructor.</para>
+            <para>To allow for default or value initialization of the various types, we will add two
+                constructors, one for default initialization and one for value
+                initialization:</para>
+            <programlisting>vector(size_type n, value_init_t, const Allocator&amp; = Allocator());
+vector(size_type n, default_init_t, const Allocator&amp; = Allocator());</programlisting>
+            <para>The types <literal>value_init_t</literal> and <literal>default_init_t</literal>
+                are much like the standard type <literal>piecewise_construct_t</literal>. They are
+                empty <literal>struct</literal>s used to disambiguate function calls.</para>
+            <para>These constructors are called with <literal>constexpr</literal> variables as shown
+                below:</para>
+            <programlisting>std::vector&lt;int> intVec1{43, std::value_init);
+std::vector&lt;int> intVec2{43, std::default_init};</programlisting>
+            <para>The meaning of the <literal>value_init</literal> constructor is the same as the
+                constructor that only takes a <literal>size_type</literal>. Thus, the
+                    <literal>value_init</literal> case formally disambiguates the constructor from
+                braced-init-lists. The behavior of <literal>default_init</literal> is a bit more
+                complex.</para>
+            <para>The <literal>allocator_traits&lt;Allocator>::construct</literal> cannot
+                default-construct the types. Therefore, we will need to extend
+                    <literal>allocator_traits</literal> with a new function:
+                    <literal>default_construct</literal>. This will call either
+                    <literal>a.default_construct</literal> or if that is not available,
+                    <literal>::new(p) T</literal>, without the parentheses.</para>
+            <para>Value and default initialization overloads will be added for the following
+                functions:</para>
+            <itemizedlist>
+                <listitem>
+                    <para>Sized constructors.</para>
+                </listitem>
+                <listitem>
+                    <para><literal>insert</literal></para>
+                </listitem>
+                <listitem>
+                    <para><literal>push_back/front</literal></para>
+                </listitem>
+                <listitem>
+                    <para><literal>append</literal></para>
+                </listitem>
+                <listitem>
+                    <para><literal>assign</literal></para>
+                </listitem>
+                <listitem>
+                    <para><literal>resize</literal></para>
+                </listitem>
+            </itemizedlist>
+            <para>Note that in all cases, these are overloads that are <emphasis>added</emphasis>.
+                No existing functions are modified.</para>
+        </section>
+        <section>
+            <title>Other Disambiguation</title>
+            <para><literal>value_init_t</literal> is able to serve as a way to disambiguate the
+                sizing constructors that perform value initialization. However, it would be
+                inappropriate, from a nomenclature perspective, to use it for disambiguating this
+                constructor:</para>
+            <programlisting>vector(size_type n, const T&amp; value, const Allocator&amp; a = Allocator());</programlisting>
+            <para>If <literal>T</literal> is an integer type, and you wish to construct it from two
+                integers, there needs to be a way to disambiguate this case from an initializer list
+                of integers. We do this with a third type, which provides this constructor
+                overload:</para>
+            <programlisting>vector(size_type n, const T&amp; value, disambiguate_t, const Allocator&amp; a = Allocator());</programlisting>
+            <para>The <literal>disambiguate_t</literal> type is another empty
+                    <literal>struct</literal>. It will have a <literal>constexpr</literal> instance
+                variable that is as follows:</para>
+            <programlisting>std::vector&lt;int> intVec2{43, 2, std::no_list};</programlisting>
+        </section>
+        <section>
+            <title>Overload Ambiguity Resolution</title>
+            <para>This has the potential to create ambiguity in function overloads, if one of the
+                special types is used as a template parameter. <literal>default_init_t</literal> and
+                    <literal>value_init_t</literal> can be ambiguous if they are the value type. As
+                values, they create ambiguity between these constructors:</para>
+            <programlisting>vector(size_type n, const T&amp; value, const Allocator&amp; a = Allocator());
+vector(size_type n, value_init_t, const Allocator&amp; a = Allocator());
+vector(size_type n, default_init_t, const Allocator&amp; a = Allocator());</programlisting>
+            <para>Similar ambiguity can occur for other functions.</para>
+            <para><literal>std::disambiguate_t</literal> does not create ambiguity if it is the
+                value type. However, it can create them if it is the allocator type:</para>
+            <programlisting>vector(size_type n, const T&amp; value, std::disambiguate_t, const Allocator&amp; a = Allocator());
+vector(size_type n, const T&amp; value, const Allocator&amp; a = Allocator());</programlisting>
+            <para>The simplest way to prevent this problem is to simply forbid the use of any of
+                these types in this way. All of the affected containers will have
+                    <literal>static_assert</literal>s that detect and prevent instantiations with
+                these types. To make sure that all cases are attended to, we will forbid the use of
+                any of these types as the value type, traits type (for
+                    <literal>basic_string</literal>), or allocator type for these containers.</para>
+        </section>
+    </section>
+    <section>
+        <title>Impact on the Standard</title>
+        <para>This will add two types to the standard library, almost certainly in &lt;utility> due
+            to being used across multiple other libraries. It will add three
+                <literal>constexpr</literal> values. It adds a new
+                <literal>allocator_traits</literal> function.</para>
+        <para>Into each of the sequence containers save <literal>array</literal> (and including
+                <literal>std::basic_string</literal>), this proposal will add new constructor
+            overloads and new member function overloads. It will require these types to have some
+                <literal>static_assert</literal>s to prevent improper usage.</para>
+        <para>It will add a number of constructor and member function overloads. It will
+                <emphasis>not</emphasis> modify any existing constructors, so no ABI breakage should
+            occur. It will add some failure conditions for instantiating certain templates, but this
+            will only be for types that did not exist beforehand.</para>
+    </section>
+    <section>
+        <title>Design Decisions</title>
+        <section>
+            <title>Disambiguation of Functions</title>
+            <para>Adding new overloads, particularly of template types, always raises the specter of
+                ambiguous overloads. It was necessary to forbid some uses of these classes to
+                prevent this. By forbidding the use of control types such as these, it gives us the
+                freedom to make potentially ambiguous functions by taking away the ambiguity.</para>
+            <para>The design above forbids the use of the control types in any of these containers.
+                We could admittedly forbid them only in specific uses that create ambiguity.
+                However, using empty objects like this as any template parameter of these containers
+                is pointless. And if the user wants to do so, they can create an empty type
+                themselves. This way, we gain greater consistency by banning all uses of them,
+                whether they create ambiguity or not. It helps the API feel more consistent.</para>
+            <para>I would submit that nothing of value is lost by adding this restriction.</para>
+        </section>
+        <section>
+            <title>ABI Minimization</title>
+            <para>The decision to add new constructor and function overloads instead of replacing
+                ones and using default parameters was made to ensure that no ABI breakage would
+                occur. This proposal only adds new functions; it does not change any existing
+                ones.</para>
+        </section>
+        <section>
+            <title>Naming</title>
+            <para>Obviously, the use of <literal>value_init</literal> is primarily to contrast with
+                    <literal>default_init</literal>, thus making it clearer exactly which is
+                happening. I'm not wedded to the <literal>no_list</literal> name, but I think all of
+                them need separate names and types, so that it's clear what they're intended to do.
+                    <literal>value_init</literal> causes value-initialization. It pairs up with
+                    <literal>default_init</literal> for default initialization.
+                    <literal>no_list</literal> is just the generic term for disambiguating between
+                    <literal>initializer_list</literal> construction and
+                    non-<literal>initializer_list</literal> construction.</para>
+            <para>It's simply a nice coincidence that <literal>value_init</literal> can serve as
+                double-duty for disambiguating uniform initialization too.</para>
+        </section>
+    </section>
+    <section>
+        <title>Technical Specifications</title>
+        <para>These specifications are written against section N3337.</para>
+        <section>
+            <title>Utility</title>
+            <para>In section 20.2, paragraph 2, add the following after the declaration of
+                    <literal>declval</literal>:</para>
+            <programlisting>//20.2.5
+struct value_init_t {};
+constexpr value_init_t value_init;
+struct default_init_t {};
+constexpr default_init_t default_init;
+struct disambiguate_t {};
+constexpr disambiguate_t no_list;</programlisting>
+            <para>In section 20.6.8 [allocator.traits], paragraph 1, add the following into the
+                declaration of <literal>allocator_traits</literal>:</para>
+            <programlisting>template &lt;class T>
+static void default_construct(Alloc&amp; a, T* p);</programlisting>
+            <para>In section 20.6.8.2, [allocator.traits.members], after paragraph 5, add the
+                following:</para>
+            <blockquote>
+                <programlisting>template &lt;class T>
+static void default_construct(Alloc&amp; a, T* p);</programlisting>
+                <para><emphasis>Effects:</emphasis> calls <literal>a.default_construct(p)</literal>
+                    if that call is well-formed; otherwise, invokes <literal>::new
+                        (static_cast&lt;void*>(p)) T</literal>.</para>
+            </blockquote>
+            <para>In section 20.6.9, [default.allocator], add the following to the declaration of
+                    <literal>std::allocator</literal>:</para>
+            <programlisting>template &lt;class U>
+static void default_construct(Alloc&amp; a, U* p);</programlisting>
+            <para>In section 20.6.9.1 [allocator.members], after paragraph 12, add the
+                following:</para>
+            <blockquote>
+                <programlisting>template &lt;class U>
+static void default_construct(Alloc&amp; a, U* p);</programlisting>
+                <para><emphasis>Effects:</emphasis> calls <literal>::new (static_cast&lt;void*>(p))
+                        U</literal>.</para>
+            </blockquote>
+        </section>
+        <section>
+            <title>basic_string</title>
+            <para>In section 21.4, add the following declarations to
+                <literal>basic_string</literal>, in their appropriate sections:</para>
+            <blockquote>
+                <programlisting>basic_string(size_type n, value_init_t, const Allocator&amp; a = Allocator());</programlisting>
+                <para>Requires: <code>n &lt; npos</code></para>
+                <para>Effects: Constructs an object of class <literal>basic_string</literal> and
+                    determines its initial string value by value-initializing each char-like object
+                    via a call to  for n elements, as indicated in Table XX.</para>
+                <para>Table XX is like table 68, except that <literal>data()</literal>
+                    <quote>points at the first element of an allocated array of <literal>n</literal>
+                        elements, each storing the initial value
+                    <literal>charT()</literal></quote></para>
+                <programlisting>basic_string(size_type n, default_init_t, const Allocator&amp; a = Allocator());</programlisting>
+                <para>Requires: <code>n &lt; npos</code></para>
+                <para>Effects: Constructs an object of class <literal>basic_string</literal> and
+                    determines its initial string value by default-initializing each char-like
+                    object for n elements, as indicated in Table XY.</para>
+                <para>Table XY is like table 68, except that <literal>data()</literal>
+                    <quote>points at the first element of an allocated array of <literal>n</literal>
+                        elements, who's initial values are undefined.</quote></para>
+                <programlisting>basic_string(size_type n, charT c, disambiguate_t, const Allocator&amp; a = Allocator());</programlisting>
+                <para>Effects: <code>basic_string(n, c, a)</code></para>
+                <programlisting>void resize(size_type n, value_init_t);</programlisting>
+                <para>Effects: <code>resize(n, charT())</code></para>
+                <programlisting>void resize(size_type n, default_init_t);</programlisting>
+                <para>Requires: <code>n &lt;= max_size()</code></para>
+                <para>Throws: <literal>length_error</literal> if <code>n > max_size()</code>.</para>
+                <para>Effects: Alters the length of the string designated by
+                        <literal>*this</literal> as follows:</para>
+                <itemizedlist>
+                    <listitem>
+                        <para>If <code>n &lt;= size()</code>, the function replaces the string
+                            designated by <literal>*this</literal> with a string of length
+                                <literal>n</literal> whose elements are a copy of the initial
+                            elements of the original string designated by
+                            <literal>*this</literal>.</para>
+                    </listitem>
+                    <listitem>
+                        <para>If <code>n > size()</code>, the function replaces the string
+                            designated by <literal>*this</literal> with a string of length
+                                <literal>n</literal> whose first <literal>size()</literal> elements
+                            are a copy of the original string designated by
+                            <literal>*this</literal>, and whose remaining elements are
+                            undefined.</para>
+                    </listitem>
+                </itemizedlist>
+                <programlisting>basic_string&amp; append(size_type n, value_init_t);</programlisting>
+                <para>Effects: <code>append(n, charT())</code></para>
+                <para>Returns: <literal>*this</literal></para>
+                <programlisting>basic_string&amp; append(size_type n, default_init_t);</programlisting>
+                <para>Effects: Equivalent to <code>append(basic_string{n,
+                    default_init_t{}})</code></para>
+                <para>Returns: <literal>*this</literal></para>
+                <programlisting>void push_back(value_init_t);</programlisting>
+                <para>Effects: <code>push_back(charT())</code></para>
+                <programlisting>void push_back(default_init_t);</programlisting>
+                <para>Effects: Equivalent to <code>append(static_cast&lt;size_type>(1),
+                        default_init_t{})</code></para>
+                <programlisting>basic_string&amp; assign(size_type n, value_init_t);</programlisting>
+                <para>Effects: Equivalent to <code>assign(basic_string{n,
+                    value_init_t{}})</code></para>
+                <programlisting>basic_string&amp; assign(size_type n, default_init_t);</programlisting>
+                <para>Effects: Equivalent to <code>assign(basic_string{n,
+                    default_init_t{}})</code></para>
+                <programlisting>basic_string&amp; insert(size_type pos, size_type n, value_init_t);</programlisting>
+                <para>Effects: Equivalent to <code>insert(pos, basic_string{n,
+                        value_init_t{}})</code></para>
+                <para>Returns: <literal>*this</literal></para>
+                <programlisting>basic_string&amp; insert(size_type pos, size_type n, default_init_t);</programlisting>
+                <para>Effects: Equivalent to <code>insert(pos, basic_string{n,
+                        default_init_t{}})</code></para>
+                <para>Returns: <literal>*this</literal></para>
+                <programlisting>iterator insert(const_iterator p, value_init_t);</programlisting>
+                <para>Requires: p is a valid iterator on *this.</para>
+                <para>Effects: inserts a copy of <literal>charT()</literal> before the character
+                    referred to by <literal>p</literal>.</para>
+                <para>Returns: An iterator which refers to the copy of the inserted
+                    character.</para>
+                <programlisting>iterator insert(const_iterator p, default_init_t);</programlisting>
+                <para>Requires: p is a valid iterator on *this.</para>
+                <para>Effects: inserts a default-initialized character before the character referred
+                    to by <literal>p</literal>.</para>
+                <para>Returns: An iterator which refers to the copy of the inserted
+                    character.</para>
+                <programlisting>iterator insert(const_iterator p, size_type n, value_init_t);</programlisting>
+                <para>Requires: p is a valid iterator on *this.</para>
+                <para>Effects: inserts <literal>n</literal> copies of <literal>charT()</literal>
+                    before the character referred to by <literal>p</literal>.</para>
+                <para>Returns: An iterator which refers to the first inserted
+                        <literal>charT()</literal> character, or <literal>p</literal> if <code>n ==
+                        0</code>.</para>
+                <programlisting>iterator insert(const_iterator p, size_type n, default_init_t);</programlisting>
+                <para>Requires: p is a valid iterator on *this.</para>
+                <para>Effects: inserts <literal>n</literal> default-constructed characters before
+                    the character referred to by <literal>p</literal>.</para>
+                <para>Returns: An iterator which refers to the first inserted default-constructed
+                    character, or <literal>p</literal> if <code>n == 0</code>.</para>
+                <programlisting>basic_string&amp; replace(size_type pos1, size_type n1, size_type n2, value_init_t);</programlisting>
+                <para>Effects: Equivalent to <code>replace(pos1, n1, basic_string{n2,
+                        value_init_t{}})</code>.</para>
+                <para>Returns: <literal>*this</literal>.</para>
+                <programlisting>basic_string&amp; replace(size_type pos1, size_type n1, size_type n2, default_init_t);</programlisting>
+                <para>Effects: Equivalent to <code>replace(pos1, n1, basic_string{n2,
+                        default_init_t{}})</code>.</para>
+                <para>Returns: <literal>*this</literal>.</para>
+                <programlisting>basic_string&amp; replace(const_iterator i1, const_iterator i2, size_type n, value_init_t);</programlisting>
+                <para>Requires: <code>[begin(),i1)</code> and <code>[i1,i2)</code> are valid
+                    ranges.</para>
+                <para>Effects: Calls <code>replace(i1 - begin(), i2 - i1, basic_string{n,
+                        value_init_t{}})</code>.</para>
+                <para>Returns: <literal>*this</literal>.</para>
+                <programlisting>basic_string&amp; replace(const_iterator i1, const_iterator i2, size_type n, default_init_t);</programlisting>
+                <para>Requires: <code>[begin(),i1)</code> and <code>[i1,i2)</code> are valid
+                    ranges.</para>
+                <para>Effects: Calls <code>replace(i1 - begin(), i2 - i1, basic_string{n,
+                        default_init_t{}})</code>.</para>
+                <para>Returns: <literal>*this</literal>.</para>
+            </blockquote>
+        </section>
+        <section>
+            <title>Container requirements</title>
+            <para>In section 23.2.1, [container.requirements.general], change the first sentence of
+                paragraph 4 to read:</para>
+            <blockquote>
+                <para>For the components affected by this subclause that declare an
+                        <literal>allocator_type</literal>, objects stored in these components shall
+                    be constructed using the
+                        <literal>allocator_traits&lt;allocator_type>::construct</literal> or
+                        <literal>allocator_traits&lt;allocator_type>::default_construct</literal>
+                    functions and destroyed using the
+                        <literal>allocator_traits&lt;allocator_type>::destroy</literal> function
+                    (20.6.8.2).</para>
+            </blockquote>
+        </section>
+        <section>
+            <title>deque</title>
+            <para>In section 23.3.3.1, [deque.overview], paragraph 2, add the following declarations
+                to <literal>deque</literal>:</para>
+            <blockquote>
+                <programlisting>deque(size_type n, value_init_t, const Allocator&amp; = Allocator());
+deque(size_type n, default_init_t, const Allocator&amp; = Allocator());
+deque(size_type n, const T&amp; value, disambiguate_t, const Allocator&amp; a = Allocator());
+void assign(size_type n, value_init_t);
+void assign(size_type n, default_init_t);
+void resize(size_type sz, value_init_t);
+void resize(size_type sz, default_init_t);
+void push_front(value_init_t);
+void push_front(default_init_t);
+void push_back(value_init_t);
+void push_back(default_init_t);
+iterator insert(const_iterator position, size_type n, value_init_t);
+iterator insert(const_iterator position, size_type n, default_init_t);</programlisting>
+            </blockquote>
+        </section>
+        <section>
+            <title>forward_list</title>
+            <para>In section 23.3.4.1, [forwardlist.overview], paragraph 3, add the following
+                declarations to <literal>forward_list</literal>:</para>
+            <blockquote>
+                <programlisting>forward_list(size_type n, value_init_t, const Allocator&amp; = Allocator());
+forward_list(size_type n, default_init_t, const Allocator&amp; = Allocator());
+forward_list(size_type n, const T&amp; value, disambiguate_t, const Allocator&amp; a = Allocator());
+void assign(size_type n, value_init_t);
+void assign(size_type n, default_init_t);
+void push_front(value_init_t);
+void push_front(default_init_t);
+iterator insert_after(const_iterator position, size_type n, value_init_t);
+iterator insert_after(const_iterator position, size_type n, default_init_t);
+void resize(size_type sz, value_init_t);
+void resize(size_type sz, default_init_t);</programlisting>
+            </blockquote>
+        </section>
+        <section>
+            <title>list</title>
+            <para>In section 23.3.5.1, [list.overview], paragraph 2, add the following declarations
+                to <literal>list</literal>:</para>
+            <blockquote>
+                <programlisting>list(size_type n, value_init_t, const Allocator&amp; = Allocator());
+list(size_type n, default_init_t, const Allocator&amp; = Allocator());
+list(size_type n, const T&amp; value, disambiguate_t, const Allocator&amp; a = Allocator());
+void assign(size_type n, value_init_t);
+void assign(size_type n, default_init_t);
+void resize(size_type sz, value_init_t);
+void resize(size_type sz, default_init_t);
+void push_front(value_init_t);
+void push_front(default_init_t);
+void push_back(value_init_t);
+void push_back(default_init_t);
+iterator insert(const_iterator position, size_type n, value_init_t);
+iterator insert(const_iterator position, size_type n, default_init_t);</programlisting>
+            </blockquote>
+        </section>
+        <section>
+            <title>vector</title>
+            <para>In section 23.3.6.1, [vector.overview], paragraph 2, add the following
+                declarations to <literal>vector</literal>:</para>
+            <blockquote>
+                <programlisting>vector(size_type n, value_init_t, const Allocator&amp; = Allocator());
+vector(size_type n, default_init_t, const Allocator&amp; = Allocator());
+vector(size_type n, const T&amp; value, disambiguate_t, const Allocator&amp; a = Allocator());
+void assign(size_type n, value_init_t);
+void assign(size_type n, default_init_t);
+void resize(size_type sz, value_init_t);
+void resize(size_type sz, default_init_t);
+void push_back(value_init_t);
+void push_back(default_init_t);
+iterator insert(const_iterator position, size_type n, value_init_t);
+iterator insert(const_iterator position, size_type n, default_init_t);</programlisting>
+            </blockquote>
+        </section>
+    </section>
+    <section>
+        <title>Acknowledgements</title>
+        <para>Nevin ":-)" Liber, for pointing out the ambiguity issue with overloaded functions, as
+            well as the allocator ramifications of the proposal.</para>
+    </section>
+    <section>
+        <title>References</title>
+        <itemizedlist>
+            <listitem>
+                <para><link
+                        xlink:href="https://groups.google.com/a/isocpp.org/forum/#!topic/std-proposals/QNHYTBcjAb4"
+                        >More uniform initialization thread at isocpp.org</link></para>
+            </listitem>
+            <listitem>
+                <para><link
+                        xlink:href="https://groups.google.com/a/isocpp.org/forum/#!topic/std-proposals/4BHDIXgCcL8"
+                        >Default initialization thread at isocpp.org</link></para>
+            </listitem>
+            <listitem>
+                <para><link
+                        xlink:href="https://groups.google.com/forum/#!topic/comp.std.c++/SuTRzR3S1mw"
+                        >Request for std::vector and possibly others: minimal initalization at
+                        comp.std.c++</link></para>
+            </listitem>
+        </itemizedlist>
+    </section>
+</article>

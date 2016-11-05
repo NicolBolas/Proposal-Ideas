@@ -1,0 +1,380 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?oxygen RNGSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng" type="xml"?>
+<?oxygen SCHSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng"?>
+<article xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude"
+    xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0">
+    <title>Assorted IOStreams Improvements</title>
+    <section>
+        <title>Introduction</title>
+        <para>IO stream types are very useful for a variety of purposes. However, C++11 added a
+            number of features to C++ and the standard library that were never fully integrated into
+            some of these classes. This proposal is an attempt to align the stream classes to more
+            modern techniques and uses.</para>
+    </section>
+    <section>
+        <title>Proposals and Justifications</title>
+        <para>This proposal suggests a plethora of fixes to various stream classes:</para>
+        <itemizedlist>
+            <listitem>
+                <para>The ability to use all streams with range-based for, in a flexible and
+                    easy-to-use way.</para>
+            </listitem>
+            <listitem>
+                <para>Movement of <classname>basic_string</classname> objects into and out of
+                    stringstreams.</para>
+            </listitem>
+            <listitem>
+                <para>Stateful allocator support for stringstreams</para>
+            </listitem>
+            <listitem>
+                <para>More initializers for stringstreams. Specifically, initialization by iterator
+                    ranges and by charT arrays with explicit sizes.</para>
+            </listitem>
+        </itemizedlist>
+        <section>
+            <title>Range Adapters for Streams</title>
+            <para>This involves the creation of a number of non-member functions which return
+                iterator ranges from <classname>basic_istream</classname>s. In the absence of a
+                concrete range proposal, this will instead focus on producing objects which can be
+                used in range-based for loops. The general idea is to mirror the existing stream
+                iterator classes. Thus, a range will simply be a pair of appropriate
+                iterators.</para>
+            <para>The range will be exposed by a series of functions. They will be:</para>
+            <programlisting>template&lt;class T, class Distance = std::ptrdiff_t, class CharT = char, class Traits = std::char_traits&lt;CharT>>
+  /*unspecified*/ istream_range(std::basic_istream&lt;CharT, Traits> &amp;stream);
+template&lt;class Distance = std::ptrdiff_t, class CharT = char, class Traits = std::char_traits&lt;CharT>>
+  /*unspecified*/ istreambuf_range(std::basic_istream&lt;CharT, Traits> &amp;stream) noexcept;</programlisting>
+            <para>The return value of these functions will be a class for which
+                    <function>begin</function> and <function>end</function> can be called. This can
+                be through direct member functions or specializations/overloads of
+                    <function>std::begin/std::end</function>, as appropriate. These functions will
+                return the start and end of the appropriate iterator range.
+                    <function>istream_range</function>'s return value will yield
+                    <classname>std::istream_iterator&lt;T></classname> iterators. And so
+                forth.</para>
+            <para>The returned class will be copy/move constructible and assignable. It will have
+                all of the features of <classname>istream_iterator</classname>, including the same
+                set of typedefs. If <classname>T</classname> is a literal type, then the class will
+                have a constexpr constructor and a trivial copy constructor and destructor.</para>
+        </section>
+        <section>
+            <title>Move Support for Stringstreams</title>
+            <para>Consider a common use case of <literal>ostringstream</literal>: building a string
+                in memory based on a successive series of formatting operations:</para>
+            <programlisting>std::ostringstream out_data;
+out_data &lt;&lt; ...;
+out_data &lt;&lt; ...;
+...</programlisting>
+            <para>Once the string has been built in the stream, it must be stored into a
+                    <literal>std::string</literal>:</para>
+            <programlisting>std::string my_data = out_data.str();</programlisting>
+            <para>Currently, this is a string copy operation. There is no need for this, especially
+                if <literal>out_data</literal> is going to be destroyed immediately afterwards.
+                Consider a function of the form:</para>
+            <programlisting>std::string BuildString(...)
+{
+  std::ostringstream out_data;
+  out_data &lt;&lt; ...;
+  out_data &lt;&lt; ...;
+  ...
+  return out_data.str();
+}</programlisting>
+            <para>Move support was added into C++11 to avoid precisely this sort of copying. If that
+                were a <literal>std::string</literal> instead of a
+                    <literal>std::ostringstream</literal>, this would not be a problem. The return
+                value would be move-constructed, and thus no copying would be needed.</para>
+            <para>Similarly, it is sometimes the case that the user finds themselves with a string
+                that they need to perform input stream operations on. Perhaps they have some
+                integers stored in a simple format that an <literal>std::istringstream</literal>
+                would be appropriate for. Consider this code:</para>
+            <programlisting>const char *from_c = GetStringFromCAPI();
+std::istringstream in_data{std::string{from_c}};
+in_data >> ...;</programlisting>
+            <para>This performs <emphasis>two copies</emphasis> of the string data. First,
+                    <literal>from_c</literal> is copied into a <literal>std::string</literal>
+                temporary. Then it is copied into its final destination in the
+                    <literal>istringstream</literal>. There is no need for this; one copy may be
+                sufficient. The problem is that <literal>istringstream</literal>'s constructor does
+                not take an rvalue reference to a string.</para>
+            <para>To resolve these issues, this proposal will allow the
+                    <classname>basic_stringbuf</classname> and
+                    <classname>basic_stringstream</classname> classes to take
+                    <classname>basic_string</classname> classes by rvalue reference. They will have
+                a constructor overload that does this, as well as a <function>str()</function>
+                overload that takes the input value by rvalue reference.</para>
+            <para>Additionally, there will be a new function added, <function>move_str</function>,
+                which returns a <classname>basic_string</classname> by value. This function will
+                leave the stream or buffer in the standard moved-from state: valid but
+                unspecified.</para>
+            <para>Note that this allows some leeway for implementations here. Implementations are
+                not required to adopt the string's memory, or to return that memory when requested.
+                They are simply permitted to do so, as with any other move operations. Unless the
+                buffer is implemented in terms of <classname>basic_string</classname>, there would
+                be no way to adopt that memory without the buffer having direct knowledge of the
+                internal working of the <classname>basic_string</classname> class. So
+                implementations will still have the freedom not to implement direct move support.
+                But they would have the ability to do so if they wish.</para>
+        </section>
+        <section>
+            <title>Allocator Support for Stringstreams</title>
+            <para>C++11 added stateful allocators to the standard library containers. All of those
+                containers already had constructors that took allocators, so few changes to the
+                interface of those containers were necessary.</para>
+            <para>The stringstream classes permit the use of allocators. But they don't actually
+                take allocator instances as parameters, which makes using allocators that have state
+                pretty much impossible. They also don't have a <function>get_allocator</function>
+                function. They also lack the ability to work with
+                    <classname>basic_string</classname> objects that use different allocator types
+                from the stream class itself.</para>
+            <para>This will correct all of these issues. Specifically, there will be:</para>
+            <itemizedlist>
+                <listitem>
+                    <para>A constructor that takes an allocator instance (and the
+                            <classname>openmode</classname> flags).</para>
+                </listitem>
+                <listitem>
+                    <para>A template constructor that takes a <classname>const basic_string
+                            &amp;</classname>, with the <classname>basic_string</classname>'s
+                        allocator being the template parameter. It will also take an optional
+                        allocator instance, to be default constructed when not specified.</para>
+                    <note>
+                        <para>There will not be a comparable version for <classname>basic_string
+                                &amp;&amp;</classname>. In order to move, the allocator types must
+                            be the same. Technically, one could perform a compile-time check to see
+                            if the allocator types are equality comparable, then do a runtime test
+                            to see if they're equal and only copy if they compare equal. However,
+                            requiring the same allocator types for movement is consistent with all
+                            existing standard containers.</para>
+                    </note>
+                </listitem>
+                <listitem>
+                    <para>A modification to the behavior of the constructor that takes a
+                            <classname>const basic_string &amp;</classname> that uses the same
+                        allocator type as the container. In such a case, the allocator instance used
+                        by the stream/buf will be copied from the
+                            <classname>basic_string</classname>'s allocator.</para>
+                </listitem>
+                <listitem>
+                    <para>A modification to the behavior of the constructor that takes a
+                            <classname>basic_string &amp;&amp;</classname> (added per the above).
+                        The allocator instance used by the stream/buf will be move-constructed from
+                        the <classname>basic_string</classname>'s allocator.</para>
+                </listitem>
+                <listitem>
+                    <para>A <function>get_allocator</function> function that returns the current
+                        allocator object.</para>
+                </listitem>
+                <listitem>
+                    <para>A template overload of <function>str</function> that takes a
+                            <classname>const basic_string &amp;</classname>, with the
+                            <classname>basic_string</classname>'s allocator being the template
+                        parameter. It will also take an optional allocator instance, to be default
+                        constructed when not specified. The currently used allocator will be
+                        replaced by the given one.</para>
+                </listitem>
+                <listitem>
+                    <para>A template overload of <function>str</function>. The return value is a
+                            <classname>basic_string</classname>, with the allocator type being the
+                        template parameter. This function will take an optional allocator instance
+                        argument, of the template parameter's type. This allocator instance will be
+                        used in the construction of the <classname>basic_string</classname> return
+                        value.</para>
+                </listitem>
+                <listitem>
+                    <para>The moving <function>move_str</function> member function (added per the
+                        above) will use the move the current allocator instance into the
+                            <classname>basic_string</classname>.</para>
+                </listitem>
+            </itemizedlist>
+        </section>
+        <section>
+            <title>Stringstream Initializers</title>
+            <para>At present, there is only one way to initialize stringstreams: with a
+                    <classname>basic_string</classname>. So if one has a string literal, this
+                involves an additional copy of the string. While the move support added above will
+                help cover that circumstance (though small string optimization can impact this), it
+                would be better still to make it possible to initialize stringstreams in two other
+                ways.</para>
+            <para>It should be possible to initialize a stringstream via an iterator pair (with an
+                optional allocator), as well as via a null-terminated <classname>const CharT
+                    *</classname>. It can also take the string by the new
+                    <classname>string_view</classname> class, in order to improve interoperability.
+                For the sake of consistency, there should also be an overload for a <classname>const
+                    CharT *</classname> + a length, even though <classname>string_view</classname>
+                should cover that scenario adequately.</para>
+            <para>There should also be appropriate <function>str</function> overloads to do all of
+                the above as well.</para>
+        </section>
+    </section>
+    <section>
+        <title>Impact on the Standard</title>
+        <para>These changes should all be completely backwards compatible. As for the ABI, this
+            should not modify any of the existing functions of these classes. It will add new
+            overloads that will be called in different situations, and the specific overload called
+            by existing code may change. However, it will not change the meaning or intent of such
+            code.</para>
+    </section>
+    <section>
+        <title>Design Decisions</title>
+        <para/>
+    </section>
+    <section>
+        <title>Technical Specifications</title>
+        <para>These specifications are written against section N3690, the C++14 CD.</para>
+        <para>In section 24.3, add the following after the stream iterators, but before the range
+            accessors:</para>
+        <blockquote>
+            <programlisting language="cpp">template&lt;class T, class Distance = std::ptrdiff_t, class CharT = char, class Traits = std::char_traits&lt;CharT>>
+  /*unspecified*/ istream_range(std::basic_istream&lt;CharT, Traits> &amp;stream);
+template&lt;class Distance = std::ptrdiff_t, class CharT = char, class Traits = std::char_traits&lt;CharT>>
+  /*unspecified*/ istreambuf_range(std::basic_istream&lt;CharT, Traits> &amp;stream) noexcept;</programlisting>
+        </blockquote>
+        <para>In section 24.6, add the following sections after 24.6.4:</para>
+        <blockquote>
+            <para>24.6.5: Function Template istream_range</para>
+            <programlisting language="cpp">template&lt;class T, class Distance = std::ptrdiff_t, class CharT = char, class Traits = std::char_traits&lt;CharT>>
+  /*unspecified*/ istream_range(std::basic_istream&lt;CharT, Traits> &amp;stream);</programlisting>
+            <para><emphasis>Returns:</emphasis> An object which is CopyConstrctible and
+                DefaultConstructible. It will have a member function named
+                    <function>begin</function> which takes no parameters and returns an
+                    <classname>istream_iterator&lt;T, CharT, Traits, Distance></classname> that is
+                constructed from <varname>stream</varname>. It will have a member function named
+                    <function>end</function>, which takes no parameters and returns a
+                default-constructed <classname>istream_iterator&lt;T, CharT, Traits,
+                    Distance></classname>.</para>
+            <para>The return value's type will have public member typedefs
+                    <classname>char_type</classname>, <classname>traits_type</classname>, and
+                    <classname>istream_type</classname>. These will be taken from the
+                    <classname>istream_iterator</classname> that the <function>begin</function> and
+                    <function>end</function> functions will return. The type will also have a public
+                member typedef <classname>iterator_type</classname>, which is
+                    <classname>istream_iterator&lt;T, CharT, Traits, Distance></classname>.</para>
+            <para>If <classname>T</classname> is a literal type, then the type of the return value
+                will have the copy constructor and destructor be trivial.</para>
+            <para>24.6.6: Function Template istreambuf_range</para>
+            <programlisting language="cpp">template&lt;class Distance = std::ptrdiff_t, class CharT = char, class Traits = std::char_traits&lt;CharT>>
+  /*unspecified*/ istreambuf_range(std::basic_istream&lt;CharT, Traits> &amp;stream) noexcept;</programlisting>
+            <para><emphasis>Returns:</emphasis> An object which is CopyConstrctible and
+                DefaultConstructible. It will have a member function named
+                    <function>begin</function> which takes no parameters and returns an
+                    <classname>istreambuf_iterator&lt;CharT, Traits, Distance></classname> that is
+                constructed from <varname>stream</varname>. It will have a member function named
+                    <function>end</function>, which takes no parameters and returns a
+                default-constructed <classname>istreambuf_iterator&lt;CharT, Traits,
+                    Distance></classname>.</para>
+            <para>The return value's type will have public member typedefs
+                    <classname>char_type</classname>, <classname>traits_type</classname>, and
+                    <classname>istream_type</classname>. These will be taken from the
+                    <classname>istreambuf_iterator</classname> that the <function>begin</function>
+                and <function>end</function> functions will return. The type will also have a public
+                member typedef <classname>iterator_type</classname>, which is
+                    <classname>istreambuf_iterator&lt;T, CharT, Traits,
+                Distance></classname>.</para>
+            <para>The copy constructor and destructor will be trivial.</para>
+        </blockquote>
+        <para>In section 27.8.2, [stringbuf], add the following declarations to the constructors
+            section of <literal>basic_stringbuf</literal>'s declaration:</para>
+        <blockquote>
+            <programlisting language="cpp">explicit basic_stringbuf(basic_string&lt;charT,traits,Allocator>&amp;&amp; s,
+                         ios_base::openmode which = ios_base::in | ios_base::out);
+basic_stringbuf(allocator_arg_t,
+                const Allocator&amp; alloc,
+                ios_base::openmode which = ios_base::in | ios_base::out);
+template&lt;class StringAllocator>
+  explicit basic_stringbuf(const basic_string&lt;charT,traits,StringAllocator>&amp; s,
+                           ios_base::openmode which = ios_base::in | ios_base::out);
+template&lt;class StringAllocator>
+  basic_stringbuf(const basic_string&lt;charT,traits,StringAllocator>&amp; s,
+                  const Allocator &amp;alloc,
+                  ios_base::openmode which = ios_base::in | ios_base::out);
+explicit basic_stringbuf(const CharT *string,
+                         const Allocator &amp;alloc = Allocator(),
+                         ios_base::openmode which = ios_base::in | ios_base::out);
+basic_stringbuf(const CharT *string, size_t length,
+                const Allocator &amp;alloc = Allocator(),
+                ios_base::openmode which = ios_base::in | ios_base::out);
+explicit basic_stringbuf(const string_view *s,
+                         const Allocator &amp;alloc = Allocator(),
+                         ios_base::openmode which = ios_base::in | ios_base::out);
+template&lt;class InputIterator>
+  basic_stringbuf(InputIterator first, InputIterator last,
+                  const Allocator &amp;alloc = Allocator(),
+                  ios_base::openmode which = ios_base::in | ios_base::out);</programlisting>
+        </blockquote>
+        <para>Add the following declarations to the "get and set" section of
+                <literal>basic_stringbuf</literal>'s declaration:</para>
+        <blockquote>
+            <programlisting language="cpp">allocator_type get_allocator() const;
+void str(basic_string&lt;charT,traits,Allocator>&amp;&amp; s);
+template&lt;class StringAllocator>
+  void str(const basic_string&lt;charT,traits,StringAllocator>&amp; s);
+str(const CharT *string,
+    const Allocator &amp;alloc = Allocator());
+str(const CharT *string, size_t length,
+    const Allocator &amp;alloc = Allocator());
+str(const string_view *s,
+    const Allocator &amp;alloc = Allocator());
+template&lt;class InputIterator>
+  str(InputIterator first, InputIterator last,
+      const Allocator &amp;alloc = Allocator());
+template&lt;class StringAllocator>
+  basic_string&lt;charT,traits,StringAllocator> str(allocator_arg_t, const StringAllocator &amp;alloc = StringAllocator());
+basic_string&lt;charT,traits,Allocator> move_str();</programlisting>
+        </blockquote>
+        <para>In section 27.8.2.1, [stringbuf.cons], add the following declarations:</para>
+        <blockquote>
+            <programlisting>explicit basic_stringbuf(basic_string&lt;charT,traits,Allocator>&amp;&amp; s, ios_base::openmode which = ios_base::in | ios_base::out);</programlisting>
+            <para>Effects: Constructs an object of class <literal>basic_stringbuf</literal>,
+                initializing the base class with <literal>basic_streambuf()</literal> (27.6.3.1),
+                and initializing <literal>mode</literal> with <literal>which</literal>. Then calls
+                    <literal>str(move(s))</literal>.</para>
+        </blockquote>
+        <para>In section 27.8.2.3, [stringbuf.members], add the following declarations:</para>
+        <blockquote>
+            <programlisting>void str(basic_string&lt;charT,traits,Allocator>&amp;&amp; s);</programlisting>
+            <para>Effects: Copies or moves the content of <literal>s</literal> into the
+                    <literal>basic_stringbuf</literal> underlying character sequence and initializes
+                the input and output sequences according to <literal>mode</literal>.</para>
+            <para>Postconditions: <literal>s</literal> is left in a valid-but-unspecified
+                state.</para>
+            <para>If <code>mode &amp; ios_base::out</code> is true, <literal>pbase()</literal>
+                points to the first underlying character and <code>epptr() >= pbase() +
+                    s.size()</code> holds; in addition, if <code>mode &amp; ios_base::ate</code> is
+                true, <code>pptr() == pbase() + s.size()</code> holds, otherwise <code>pptr() ==
+                    pbase()</code> is true. If <code>mode &amp; ios_base::in</code> is true,
+                    <literal>eback()</literal> points to the first underlying character, and both
+                    <code>gptr() == eback()</code> and <code>egptr() == eback() + s.size()</code>
+                hold.</para>
+            <programlisting>basic_string&lt;charT,traits,Allocator> move_str();</programlisting>
+            <para>Returns: Returns: A <literal>basic_string</literal> object whose content is equal
+                to the <literal>basic_stringbuf</literal> underlying character sequence. If the
+                    <literal>basic_stringbuf</literal> was created only in input mode, the resultant
+                    <literal>basic_string</literal> contains the character sequence in the range
+                    <code>[eback(),egptr())</code>. If the <literal>basic_stringbuf</literal> was
+                created with <code>which &amp; ios_base::out</code> being true then, the resultant
+                    <literal>basic_string</literal> contains the character sequence in the range
+                    <code>[pbase(),high_mark)</code>, where high_mark represents the position one
+                past the highest initialized character in the buffer. Characters can be initialized
+                by writing to the stream, by constructing the basic_stringbuf with a basic_string,
+                or by calling the str(basic_string) member function. In the case of calling the
+                str(basic_string) member function, all characters initialized prior to the call are
+                now considered uninitialized (except for those characters re-initialized by the new
+                basic_string). Otherwise the basic_stringbuf has been created in neither input nor
+                output mode and a zero length basic_string is returned.</para>
+        </blockquote>
+    </section>
+    <section>
+        <title>Acknowledgements</title>
+        <para>Daniel Krügler, on avoiding ABI breakage.</para>
+    </section>
+    <section>
+        <title>References</title>
+        <itemizedlist>
+            <listitem>
+                <para><link
+                        xlink:href="https://groups.google.com/forum/#!topicsearchin/comp.std.c$242B$242B/author:me/comp.std.c++/g79xQ6MX6rU"
+                        >Move Semantics in stringstream</link></para>
+            </listitem>
+        </itemizedlist>
+    </section>
+</article>

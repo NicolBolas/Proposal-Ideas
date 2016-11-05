@@ -1,0 +1,522 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?oxygen RNGSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng" type="xml"?>
+<?oxygen SCHSchema="http://docbook.org/xml/5.0/rng/docbookxi.rng"?>
+<article xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude"
+    xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0">
+    <title>Towards More Uniform Initialization</title>
+    <section>
+        <title>Introduction</title>
+        <para>Brace-bounded lists of values were originally confined to use with aggregate
+            initialization. In the development of C++11, the idea was proposed to extend this to
+            include non-aggregate types through the use of a special <type>initializer_list</type>
+            type.</para>
+        <para>This idea was ultimately extended into what became known as uniform initialization:
+            one could initialize any type via the use of a braced-init-list. Doing so provides a
+            number of advantages, among them is uniform initialization behavior and the elimination
+            of the most vexing parse. In a perfect world, we would always use uniform initialization
+            and never use direct constructor syntax.</para>
+        <para>However, despite being called <quote>uniform initialization,</quote> it cannot be
+            uniformly used everywhere, due to a critical flaw that prevents its use towards these
+            ends. This proposal intends to correct this flaw, thus allowing it to be used in all
+            possible cases of object construction, while having well-defined results.</para>
+    </section>
+    <section>
+        <title>Understanding the Flaw</title>
+        <para>Normally in C++, if the attempt to deduce the parameters for a function call would
+            result in two or more equally-preferred functions, the compiler would complain. This
+            would force the user to use an explicit conversion in some part of the function call,
+            thus allowing them to explicitly resolve the ambiguity.</para>
+        <para>The flaw in C++11's uniform initialization is based on such an ambiguity. This flaw
+            comes up because C++ forces a specific resolution of the ambiguity, rather than giving
+            the user the opportunity to resolve the ambiguity with some specific syntax. The
+            ambiguity is quite simple: For some type <type>T</type>, what does this mean?</para>
+        <programlisting>T t{5};</programlisting>
+        <para>If <type>T</type> is an aggregate, the rules say that <varname>t</varname> will be
+            aggregate initialized. If <type>T</type> is a non-aggregate type, then a constructor of
+            some kind will be called. However, in order to allow container types like
+                <type>std::vector</type> to take sequences of uniform values, the C++11 rules do
+            something very strange. They allow the braced-init-list to match, not only constructor
+            signatures that take the given values, but also to match against constructors that take
+            a single non-default value of <type>initializer_list</type> type. If the
+            braced-init-list can be used to build an <type>initializer_list</type> that matches an
+            initializer-list constructor, then that constructor will be called.</para>
+        <para>The problem is that this now creates ambiguity between the list of constructors who
+            take the braced-init-list's values as parameters, and the list of initializer-list
+            constructors who take the braced-init-list as a single parameter.</para>
+        <para>C++ normally would resolve such ambiguity with a compiler error. In function overload
+            resolution, this would force the user to explicitly resolve the call, using some syntax.
+            In particular, the tool of choice is an explicit cast or conversion of some kind.
+            However, in the attempt to create completely uniform syntax, it was decided to use an
+            ad-hoc rule to resolve the ambiguity. Thus, initializer-list constructors are preferred
+            over non-initializer-list constructors.</para>
+        <para>This means that there are constructors that can be hidden entirely from uniform
+            initialization syntax. And therefore, the when the user writes <code>T t{5};</code> in
+            some template code, they can never be certain of what this will actually do. This makes
+            uniform initialization extremely unreliable.</para>
+        <para>It also creates a serious maintenance problem. Consider a library that exposes some
+            type that users are able to use. Users may be using uniform initialization syntax to
+            construct these types. Now, what if the maintainer of the library wants to add an
+            initializer-list constructor? Suddenly, perfectly functioning code is now broken.</para>
+        <para>This maintenance problem is faced by any function you might add overloads to, but
+            there are two differences. First, the breakage in the function overloading case is
+            noisy; the code that became ambiguous is ill-formed. While this is annoying for users
+            who's code used to work, at least it's not silently doing the wrong thing. With the
+            uniform initialization case, the code silently starts doing something highly unexpected.
+            But the bigger problem is that the function case can be easily resolved via appropriate
+            explicit casts and conversion.</para>
+        <para>That is extremely important, because the only way to resolve the uniform
+            initialization ambiguity currently is to stop using uniform initialization syntax. This
+            answer is functional on some level, but it does lead to problems.</para>
+        <para>For example, there is a reported defect in C++11, about the use of
+                <function>emplace</function> functions on containers. Namely, that you can't call
+                <function>emplace</function> functions on a container of aggregates, because
+            aggregates by definition do not have constructors (besides the default and copy/move
+            constructors). The proposed resolution of this is to have the standard
+                <function>std::allocator_traits&lt;T>::construct</function> method detect whether
+                <type>T</type> is an aggregate via the type-traits, and use constructor or aggregate
+            initialization on it as appropriate.</para>
+        <para>Why doesn't <function>std::allocator_traits&lt;T>::construct</function> simply use
+            uniform initialization? Because uniform initialization cannot be trusted to do the right
+            thing. The right thing in this case being to use aggregate initialization for aggregates
+            or take the elements of the braced-init-list as constructor parameters. Hence the name
+            of the function: <function>construct</function>.</para>
+        <para>The proposed resolution to the defect requires template metaprogramming tricks
+            involving <type>std::enable_if</type>-bound function calls. While later C++ versions
+            will be able to use cleaner techniques like concepts, the fact remains that there is
+            clearly something missing in uniform initialization if it cannot do something as simple
+            as this. This is after all what uniform initialization is for: initializing aggregates
+            like objects. But you can't do that if you want to avoid initializer-list
+            constructors.</para>
+        <para>The fundamental problem arises due to a conceptual error in uniform initialization:
+            the lack of the user's intent. When a user writes <code>T t{5};</code>, they generally
+            have some expectation about what this code is supposed to do. They have some concept of
+            what operations they expect to be legal on <type>T</type>, and they therefore expect
+            something specific to happen when it is called.</para>
+        <para>When initializing a value, there are two conceptual ways to want to initialize it. One
+            could construct an object by providing a series of parameters who's values may or may
+            not be of uniform type. These parameters will be used in some way in constructing that
+            object's data, but there would not be a general expectation that the parameter's values
+            would be directly accessible in the resulting object. Alternatively, the user could
+            provide a list of values of uniform type, usually under the assumption that such a list
+            will be stored in the object or otherwise reflected in that object's contents.</para>
+        <para>Some types can only be constructed in one way or the other; a
+                <type>std::unique_ptr</type> can only be constructed from a series of parameters. A
+                <type>std::array</type> can only be constructed from a sequence of values that
+            specify its contents. However, some types can be constructed from both in different
+            circumstances; <type>std::vector</type> could be built from parameters, but it could
+            also be built using a series of values that it will be initialized with. Aggregates are
+            a special case, as one can conceptually treat an aggregate as either a constructed
+            object or a container of values, depending on how you think about it. Or sometimes both
+            at once.</para>
+        <para>Uniform initialization syntax does not offer the user the ability to specify this
+            intent when initializing an object. It intermingles the two. Other initialization
+            syntaxes do let you specify which; constructor syntax is the exclusive domain of a
+            parameter sequence, but it cannot be used with aggregates.</para>
+        <para>This is not a theoretical problem with the syntax. It is an actual, real problem which
+            people face. <link
+                xlink:href="http://probablydance.com/2013/02/02/the-problems-with-uniform-initialization/"
+                >Advice is being offered based on this issue, suggesting that people avoid
+                it.</link> Other advice is being offered suggesting that they use it, but without
+            any sort of warning that this could be a problem. So we have one set of users who are
+            being told to avoid it where possible, while another set are being told to always use
+            it.</para>
+        <para>That is not a good situation.</para>
+    </section>
+    <section>
+        <title>Possible Solutions</title>
+        <para>What follows are a list of potential solutions and discarded designs. This discussion
+            should help explain how the final design proposed was arrived at.</para>
+        <section>
+            <title>Library vs Language</title>
+            <para>Originally, I considered a library-based solution to the issue. This would have
+                required adding a special opaque type taken as a parameter to various calls. Since
+                the opaque type is different from other types, it would prevent the braced-init-list
+                from binding to an <type>initializer_list</type> constructor, thus disambiguating
+                the call.</para>
+            <para>This is problematic for two reasons. First, it adds some complexity to various
+                container classes, as they now have to prevent the user from using the opaque type
+                as the member or allocator types (to prevent constructor overload resolution
+                problems). But the primary reason that this is not a good solution is because it
+                only solves the problem for the standard library.</para>
+            <para>We should not ask every user who writes an <type>initializer_list</type>
+                constructor to go though and add a suffix parameter to various functions that could
+                interfere. While it is true that overload resolution is something the developers
+                have to think off when adding new overloads, they are still able to add different
+                constructors so long as the user can use some kind of explicit conversion to resolve
+                the ambiguity. But no such syntax exists for uniform initialization.</para>
+            <para>This is a problem introduced by the language; therefore, it is best solved by the
+                language. <code>std::enable_if</code>, and all of the complexity around it, is what
+                we get when we try to solve language problems (lack of concept checking) with
+                library solutions.</para>
+        </section>
+        <section>
+            <title>Break the World, Fix it Later</title>
+            <para>As previously stated, this problem occurs due to an ambiguity between using the
+                braced-init-list as arguments to a constructor and as an
+                    <type>initializer_list</type> parameter to the constructor. Normally, C++
+                resolves ambiguities by forcing users to resolve them themselves. In this case, it
+                was decided to use an ad-hoc rule instead of forcing resolution, in order to allow
+                the syntax to be more uniform.</para>
+            <para>Thus, one obvious solution is to remove the ad-hoc rule and use the normal C++
+                resolution: if there is an ambiguity, if the compiler could have picked one or the
+                other, then throw a compiler error and force the user to state what they want. The
+                suggestion is to simply issue this as a breaking change (a noisy one), then study
+                the problem until the next standard and propose a fix to the uniform initialization
+                syntax that allows the user to use uniform initialization syntax to resolve
+                it.</para>
+            <para>There are a number of problems with this scenario.</para>
+            <para>For one, it does not allow you to use <code>vector&lt;int>{20, 10}</code> at all.
+                Which means that if you want to construct a <code>vector&lt;int></code> that
+                contains two integers, you're out of luck. While you can use
+                    <code>vector&lt;int>(20, 10)</code> to get at the constructor version, you can't
+                get at the initializer-list constructor at all. So it leaves the feature in a state
+                that seems very fragile.</para>
+            <para>The much better issue is that it does not really resolve the problem; it simply
+                puts a <quote>do not use; may be fixed eventually</quote> label on it. The net
+                effect of this will be to stop people from using uniform initialization syntax,
+                because it would be unreliable in a very noisy way. This is better in some respects
+                than the current state of things (namely, that it is unreliable in a
+                    <emphasis>silent</emphasis> way), but it is ultimately a lateral move. Uniform
+                initialization itself would still be broken; the compiler would simply complain
+                about it more often.</para>
+            <para>Note that the actual proposal, as described below, does include making this
+                breaking change as part of the proposal. However, this can only be safely done as
+                part of a comprehensive solution that resolves the problem entirely. Not as a way to
+                declare a feature broken without actually fixing it. It should not be taken as a
+                separate proposal; the two should be taken as one: either both go in or both stay
+                out.</para>
+        </section>
+        <section>
+            <title>Limited Resolution</title>
+            <para><link
+                    xlink:href="http://probablydance.com/2013/02/02/the-problems-with-uniform-initialization/"
+                    >It has been suggested that adding syntax for resolving the ambiguity amounts to
+                    adding a new kind of initialization.</link> Therefore, the focus should be on
+                fixing the ad-hoc ambiguity rules, rather than allowing the user to specify their
+                intent more precisely.</para>
+            <para>The suggestion from that link is to modify the ambiguity rules. The first part of
+                the suggestion is to have different rules for <quote>template code.</quote> Since
+                the suggestion is not very specific, I will assume that this means to use different
+                rules if the type is dependent on a template parameter. Alternatively it could mean
+                that being within a template function/class gives code different rules.</para>
+            <para>Both of these are bad ideas, for one very simple reason. It would be incredibly
+                surprising to users if these two function calls do not return the same thing:</para>
+            <programlisting>template&lt;typename T>
+T MakeT()
+{
+  return T{5};
+}
+
+std::vector&lt;int> MakeVec()
+{
+  return std::vector&lt;int>{5};
+}
+
+MakeT&lt;std::vector&lt;int>>() == MakeVec();</programlisting>
+            <para>I am not certain, but I don't believe there is an instance in C++ where (outside
+                of SFINAE techniques) template code resolves to functionally different code if you
+                replace the template parameters manually with a specific type, compared to actually
+                instantiating that type. The only place where this might come up is in the
+                resolution of dependent names when a template is instantiated. But even so, if you
+                resolve all of the dependent names manually, you will get the same C++ code in
+                either case.</para>
+            <para>I do not feel that changing the fundamental rules of what syntax
+                    <emphasis>means</emphasis> just because that syntax happens to be within
+                    <quote>template code</quote> is an acceptable solution.</para>
+            <para>Furthermore, it does not really address the problem. The new ad-hoc rules do
+                better things in some cases, but it doesn't allow you to use uniform initialization
+                syntax generally. It doesn't solve the ambiguity and the hiding of constructors. It
+                just fixes a couple of cases, not all of them.</para>
+            <para>It doesn't make uniform initialization <emphasis>uniform</emphasis>.</para>
+        </section>
+        <section>
+            <title>Change the Original</title>
+            <para>There was an alternate design to resolve the issue. Simply declare that
+                    non-<type>initializer_list</type> constructors have priority, instead of the
+                other way around. Or, more specifically, go into 13.3.1.7 and just remove the first
+                item in the list. So it would only ever check construction of the type by the
+                members of the braced init list as parameters. This would make these completely
+                unambiguous:</para>
+            <programlisting>std::vector&lt;int> v1{20};
+std::vector&lt;int> v2{{20}};</programlisting>
+            <para><type>v1</type> is using the <type>size_type</type> constructor. <type>v2</type>
+                is clearly calling a single-argument constructor using a braced-init-list.</para>
+            <para>The obvious problem with this is that it is a breaking change. Even worse, it's a
+                    <emphasis>silent</emphasis> breaking change.</para>
+            <para>Another big problem is that it doesn't look uniform with aggregate
+                initialization:</para>
+            <programlisting>std::array&lt;int, 6> a1 = {1, 2, 3, 4, 5, 6}; //Brace elision removes the extra pair.
+std::vector&lt;int> v1 = {1, 2, 3, 4, 5, 6}; //Brace "elision" possible.
+std::array&lt;int, 1> a2 = {1}; //Brace elision still works.
+std::vector&lt;int> v2 = {1};   //Brace "elision" no longer possible due to conflict. Does the wrong thing.</programlisting>
+        </section>
+    </section>
+    <section>
+        <title>General Design</title>
+        <para>Now that we've seen what we can't do (and why we can't), let's look at what we should
+            do.</para>
+        <para>The design here is to add syntax to braced-init-lists to allow the user to resolve the
+            ambiguity. This syntax only affects the construction of non-aggregates, and then only
+            for non-empty braced-init-lists. In all of the below cases, the syntax will work
+            identically as it did before.</para>
+        <para>A braced-init-list can be a qualified-braced-init-list. It can be qualified in one of
+            two ways: list or constructor. A list-qualified braced-init-list, when identifying
+            candidate constructors under 13.3.1.7, will only consider initializer-list constructors,
+            with the argument list consisting of the <type>initialiser_list</type> as a single
+            argument. A constructor-qualified braced-init-list will only consider candidate
+            constructors that can be called given the members of the braced-init-list as
+            arguments.</para>
+        <para>A braced-init-list can be qualified in one of two ways. One way is via direct syntax
+            in the braced-init-list itself:</para>
+        <programlisting>{&lt;special identifier>: ... }</programlisting>
+        <para>The <quote>special identifier</quote> is a token that defines how the braced-init-list
+            is qualified. Possible qualifications are:</para>
+        <itemizedlist>
+            <listitem>
+                <para><literal>c</literal>: The braced-init-list is constructor-qualified.</para>
+            </listitem>
+            <listitem>
+                <para><literal>l</literal>: The braced-init-list is list-qualified.</para>
+            </listitem>
+        </itemizedlist>
+        <para>Note that these are special identifiers, not keywords.</para>
+        <para>Braced-init-lists may be qualified in another way. The standard library will define
+            certain empty types which, if the first member of a braced-init-list is a cv-qualified
+            value or reference to one of those types, cause that list to be qualified. In this case,
+            the first member is also no longer considered to be a member of the
+            qualified-braced-init-list. These types are:</para>
+        <itemizedlist>
+            <listitem>
+                <para><literal>std::construct_qualified_t</literal>: An braced-init-list which has a
+                    (possibly cv-qualified) value or reference of this type as the first member will
+                    be constructor-qualified.</para>
+            </listitem>
+            <listitem>
+                <para><literal>std::list_qualified_t</literal>: An braced-init-list which has a
+                    (possibly cv-qualified) value or reference of this type as the first member will
+                    be list-qualified.</para>
+            </listitem>
+        </itemizedlist>
+        <para>The standard library should also have certain <code>constexpr</code> values of these
+            types available, to make it easier for users to use them. <code>std::nolist</code> would
+            be of <code>std::construct_qualified_t</code> type, and
+                <literal>std::init_list</literal> would be of
+            <code>std::list_qualified_t</code>.</para>
+        <para>If both methods of qualification are used, the type-based method wins. So <code>{c:
+                std::init_list, ...}</code> will be considered list-qualified, not
+            constructor-qualified.</para>
+        <para>There will also be a small number of complimentary changes to the standard
+            library.</para>
+        <para>Given this user-provided means for resolving the ambiguity, we can now use the usual
+            C++ mechanism for ambiguities: declare the code to be ill-formed. Therefore, the use of
+            unqualified braced-init-lists will not prefer either kind of constructor. It will search
+            both sets, and if it finds two or more valid matches, the code is ill-formed. This will
+            break existing code, but it will also effectively fix potentially broken code. As well
+            as prevent users from silently breaking it in the future.</para>
+        <para>Changing <function>std::make_shared</function> and
+                <function>std::make_unique</function> (and any similar functions) to use unqualified
+            braced-init-lists would be ideal, but that would be a breaking change (though it would
+            at least be noisy given the above). So instead, we will allow it to use <code>{c:
+                std::forward&lt;Args>(args)...}</code> syntax, thus letting it build aggregates. The
+            same goes for <function>std::allocator_traits&lt;T>::construct</function>. If the user
+            want to pass a list of values to use as a list-qualified sequence, they can pass a
+                <type>std::list_qualified_t</type> value as the first argument.</para>
+    </section>
+    <section>
+        <title>Design Rationale</title>
+        <para>The design is rather odd. The unusual part is the ability for members of a
+            braced-init-list to change the meaning of the list.</para>
+        <para>The reason for this is to allow the user to forward the <emphasis>intent</emphasis> of
+            the initialization along with a series of parameters another function. Consider
+                <function>make_shared</function>. It could use the <code>{c:
+                std::forward&lt;Args>(args)...}</code> and thus be usable with aggregates. But what
+            if you want to actually call an initializer-list constructor? Well, you could try
+                <code>std::make_shared&lt;T>({...});</code>, but that will not work, because
+            braced-init-lists cannot be deduced as template arguments.</para>
+        <para>However, if you pass <type>std::init_list</type> as the first parameter, we can now
+            have <code>std::make_shared</code> use <code>{c: }</code> syntax and let you resolve any
+            ambiguities. And the proposal includes this change.</para>
+        <para>The reason why there are two syntaxes for qualified-braced-init-lists is mainly for
+            readability. The type-qualified version will always be more verbose than the syntax
+            version. Having only the verbose syntax would encourage people to avoid using qualifiers
+            unless they absolutely need to (ie: have a compiler error). What we want is for people
+            to use the qualified versions by default, only using unqualified ones in specific
+            circumstances.</para>
+        <para>The reason why the type-based qualification wins out over the syntax-based
+            qualification is to better enable forwarding of intent. If the caller of a forwarding
+            function truly wants to use initializer-list initialization with this set of values,
+            then the code forwarding this intent should not be able to override it. This also allows
+            us to use <function>make_shared</function> and the like with
+                <type>std::init_list_t</type>-qualified braced-init-lists.</para>
+        <para>Notice that the ambiguity resolution rules for qualified-braced-init-lists do not have
+            a fallback. If you use constructor qualification, then initializer-list constructors are
+            not considered. If you pick initializer-list qualification, then non-initializer-list
+            constructors are not considered.</para>
+        <para>This is in keeping with normal ambiguity resolution syntax. If you put an explicit
+            conversion in a function call to resolve an ambiguity, and the function has no overload
+            matching that function, the compiler will error. So too here: if you say that you want
+            to call a constructor, and no such constructor exists, an error results. If you want to
+            use initializer-list construction, and no such initializer-list constructor can be
+            found, an error results.</para>
+        <para>The reason to remove the ad-hoc ambiguity resolution is to help users fix potentially
+            broken code. We are providing them the means to fix it here, but we must also make sure
+            that such errors do not easily happen. This is, after all, why ambiguous overloads are
+            ill-formed to begin with; we are simply extending that to uniform initialization.</para>
+    </section>
+    <section>
+        <title>Technical Specifications</title>
+        <para>TBD</para>
+    </section>
+    <section>
+        <title>Impact on the Standard</title>
+        <para>This will require some additions to 8.5.4, as well as some rewording of how
+            constructor overload resolution works in 13.3.1.7, given qualified-braced-init-lists. It
+            will also require some non-breaking changes to emplace member functions of standard
+            library classes, as well as the definition of the standard library
+                <function>std::allocator_traits&lt;T>::construct</function> member.</para>
+        <para>The proposal, as stated, will cause breaking changes. The removal of the ad-hoc rule,
+            thus causing noisy conflicts where there were silent (possibly erroneous) compliance
+            before, will break existing code. However, it will also allow the user to
+                <emphasis>fix</emphasis> that code with simple syntax.</para>
+        <para>There should be no other breaking changes. With the above exception, unqualified
+            braced-init-lists are intended to have the same behavior as in C++11. And since the new
+            grammar is ill-formed in C++11, and the new special standard-library types don't exist
+            in C++11, the syntactic and library additions should not conflict with any existing
+            code.</para>
+    </section>
+    <section>
+        <title>Possible Addendum</title>
+        <section>
+            <title>Explicit Construction</title>
+            <para>Presently, explicit constructors cannot be called in copy-list-initialization
+                contexts. This can force the use of a long, complex type in places where it is not
+                needed. For example:</para>
+            <programlisting>LongComplexFunctionReturnType&lt;ThatIShouldn,tTypeAgain> FuncName(...)
+{
+   //Compute stuff.
+   return LongComplexFunctionReturnType&lt;ThatIShouldn,tTypeAgain>{params};
+}</programlisting>
+            <para>The proposed syntax of providing parameters to the braced-init-list means that we
+                could have additional parameters that allow a braced-init-list to call explicit
+                constructors even in copy-list-initialization contexts:</para>
+            <programlisting>LongComplexFunctionReturnType&lt;ThatIShouldn,tTypeAgain> FuncName(...)
+{
+   //Compute stuff.
+   return {explicit c: params};
+}</programlisting>
+            <para>The main reason for introducing the copy-list-initialization to begin with was due
+                to concerns that not having it effectively made <literal>explicit</literal>
+                pointless, since people could easily end-run around it. This allows us to not have
+                to repeat the type, but we do have to at least state in our code the intent to call
+                    <literal>explicit</literal> constructors.</para>
+        </section>
+    </section>
+    <section>
+        <title/>
+        <para/>
+    </section>
+    <section>
+        <title/>
+        <para/>
+    </section>
+    <section>
+        <title>Motivation and Scope</title>
+        <para>The flaw in uniform initialization is quite simple to see in the standard library. The
+                <type>std::vector</type> type has an explicit constructor which takes a single
+                <type>std::vector::size_type</type>, which is an integral type.
+                <type>std::vector</type> also has a constructor that takes an
+                <type>initializer_list&lt;T></type>.</para>
+        <para>For most types, these constructors can coexist with uniform initialization quite
+            reasonably. For example:</para>
+        <programlisting>std::vector&lt;A> v1{20};
+std::vector&lt;A> v2{A{}};
+std::vector&lt;A> v3{A{}, A{}, A{}};</programlisting>
+        <para>In this example, <varname>v1</varname> is an array of 20 value-constructed values.
+                <varname>v2</varname> is an array of 1 value-constructed element.
+                <varname>v3</varname> is an array of 3 value-constructed elements.</para>
+        <para>This is all well and good, until we do this:</para>
+        <programlisting>std::vector&lt;int> v1{20};
+std::vector&lt;int> v2{int{}};
+std::vector&lt;int> v3{int{}, int{}, int{}};</programlisting>
+        <para><varname>v2</varname> and <varname>v3</varname> retain their old meaning. But
+                <varname>v1</varname> is now very different. It is an array containing a single
+            element, the number 20. Why?</para>
+        <para>Because uniform initialization syntax always prefers initializer list constructors if
+            one is available that would fit the braced-init-list. This is a consequence of uniform
+            initialization syntax using the same syntax as initializer lists: the braced-init-list.
+            And since
+                <function>std::vector&lt;int>::vector(std::initializer_list&lt;int>)</function>
+            matches the braced-init-list (<literal>{20}</literal>), it will be preferred over
+                <function>std::vector&lt;int>::vector(std::vector&lt;int>::size_type)</function></para>
+        <para>This is a problem because there is <emphasis>no way</emphasis> to get at the
+                <type>size_type</type> constructor via uniform initialization. There is no syntax
+            that we can employ which will cause the conflicting <type>initializer_list</type>
+            constructor to be ignored or to do anything else that would allow us to get at a
+            different set of constructors.</para>
+        <para>Now, this may seem like a rather unimportant issue. After all, if I know that I have
+            to use constructor initialization with <type>vector&lt;int></type>, then I can simply do
+            that. But consider code that is generic on the <type>vector</type>'s type:</para>
+        <programlisting>template&lt;typename T>
+std::vector&lt;T> MakeVector()
+{
+  return std::vector&lt;T>{20};
+}</programlisting>
+        <para>By all rights, this code should always do the same thing: return a <type>vector</type>
+            containing 20 value-initialized elements. But it does not.
+                <function>MakeVector&lt;int>()</function> will return a <type>vector</type>
+            containing exactly one element.</para>
+        <para>This is of much greater concern when dealing with more intricate templates. Consider
+            the following trivial template function:</para>
+        <programlisting>template&lt;typename T>
+T Process()
+{
+  T t{};
+  //do stuff with t;
+  return T{t};
+}</programlisting>
+        <para>This function creates a temporary, does some processing, and returns a copy of it.
+            This function requires that <type>T</type> be DefaultConstructible and
+            CopyConstructible, in addition to whatever <quote>do stuff with t</quote>
+            requires.</para>
+        <para>The problem is the last line. This line <emphasis>may</emphasis> violate the concept
+            constraint. Why? Because there is no guarantee that <type>T</type> does
+                <emphasis>not</emphasis> have an <type>initializer_list</type> constructor that can
+            match with a <type>T</type>. For an example of such a class, consider
+                <type>std::vector&lt;std::function&lt;void()>></type> as our <type>T</type>.</para>
+        <para>The problem is that <type>std::function</type> has a non-explicit constructor that can
+            take <emphasis>any</emphasis> type that is CopyConstructible. And
+                <type>std::vector&lt;std::function></type> is CopyConstructible. Therefore, this
+            will call the initializer_list constructor. But the template function should not be
+            calling the initializer list constructor; it's not part of the allowed interface to T.
+            Therefore, <function>Process</function> violates the concept constraint, through no
+            fault on the user's part.</para>
+        <para>What this means is that you cannot use uniform initialization in generic code where
+            the exact type of the object being constructed is derived from a template parameter.
+            This is because there is no way for the user to explicitly choose which constructors to
+            call.</para>
+    </section>
+    <section>
+        <title>Acknowledgements</title>
+        <itemizedlist>
+            <listitem>
+                <para>Malte Skarupke: For bringing up the issue of using uniform initialization in
+                    generic code.</para>
+            </listitem>
+            <listitem>
+                <para>Joël Lamotte: For coming up with the idea to use <quote>{:}</quote>
+                    syntax.</para>
+            </listitem>
+            <listitem>
+                <para>Jeffrey Yasskin and Nikolay Ivchenkov, who offered valuable criticism of the
+                    idea that led to the current identifier syntax.</para>
+            </listitem>
+            <listitem>
+                <para/>
+            </listitem>
+        </itemizedlist>
+    </section>
+    <section>
+        <title>References</title>
+        <para/>
+    </section>
+</article>
