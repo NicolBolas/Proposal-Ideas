@@ -1,6 +1,6 @@
-% Stateless Subobjects and Types, pre-release v3
+% Stateless Subobjects and Types, pre-release v4
 %
-% July 13, 2016
+% July 19, 2016
 
 This proposal specifies the ability to declare member and base class subobjects which do not take up space in the objects they are contained within. It also allows the user to define classes which will always be used in such a fashion.
 
@@ -29,13 +29,19 @@ The intent of this proposal is to permit, among other things, classes like `Data
 
 This would also be recursive, so that if `Alloc` had no NSDMs, and `DataBlock<Alloc>` had no NSDMs besides the `Alloc` member, then `DataBlock<Alloc>` would also be considered an empty type. And therefore, some other type could use it in a stateless fashion.
 
-# Design
+# Design {#design}
 
 We define two concepts: stateless subobjects and stateless classes. A stateless class is really just shorthand for the former; it declares that instances of the class can only be created as stateless subobjects of some other type.
 
 Note: The following syntax is entirely preliminary. This proposal is not wedded to the idea of introducing a new keyword or somesuch. This syntax is here simply for the sake of understanding how the functionality should generally be specified. The eventual syntax could be a contextual keyword like `final` and `override`, or it could be something else.
 
-### Stateless subobojects
+## Possibly-stateless types
+
+A possibly-stateless type (PST) is a type which could be used in a stateless way. This is defined as any class type for which both `std::is_empty` and `std::is_standard_layout` apply. The definition of `is_empty` is expanded by the [behavior of stateless subobjects](#stateless_behavior).
+
+The standard library will need a traits class `is_possibly_stateless` to detect if a type is possibly stateless.
+
+## Stateless subobojects
 
 A non-static data member subobject of a type can be declared stateless with the following syntax:
 
@@ -51,27 +57,32 @@ A base class subobject of a type can be declared stateless with the following sy
 		...
 	};
 
-In both cases, if `Type` is not an empty class, then this is a compile error. `stateless` cannot be applied to a base class which uses `virtual` inheritance.
+For these declarations to be well-formed, `Type` must be a PST.
 
-Member subobjects that are arrayed cannot be declared with `stateless` property. Variables which are not non-static data members cannot be declared with the stateless property.
+`stateless` cannot be applied to:
 
-`stateless` cannot be applied to a member of a `union` class.
+* Members of a `union` class
+* base classes that use `virtual` inheritance
+* Member subobjects that are arrayed
+* Variables that are not declared as non-static data members
 
 The stateless property can be conditional, based on a compile-time condition like `noexcept`. This is done as follows:
 
 	template<typename Alloc>
 	struct DataBlock
 	{
-		stateless(is_empty_v<Alloc>) Alloc a;
+		stateless(is_possibly_stateless_v<Alloc>) Alloc a;
 	};
 
-In this case, `a` will be a stateless member only if its type is empty. If the condition is false, then it is as if the stateless property were not applied to the subobject.
+In this case, `a` will be a stateless member only if its type is a PST. If the condition is false, then it is as if the stateless property were not applied to the subobject.
 
-To facilitate common use patterns, the `stateless(auto)` syntax for subobjects shall be equivalent to `stateless(std::is_empty_v<T>)`, where `T` is the type of the subobject being declared.
+To facilitate common use patterns, the `stateless(auto)` syntax for subobjects shall be equivalent to `stateless(std::is_possibly_stateless_v<T>)`, where `T` is the type of the subobject being declared.
 
-### Stateless behavior
+Classes which contain stateless subobjects, directly or indirectly, are subject to the [Unique Identity Rule](#unique_rule). Class declarations that violate the unique identity rule are il-formed.
 
-Stateless subobjects have no effect on the layout or size of their containing object. Similarly, the rules for standard layout types ignore the presence of any stateless subobjects. And thus, two classes can be layout compatible even if they differ by the presence of stateless subobjects.
+## Stateless behavior {#stateless_behavior}
+
+Stateless subobjects have no effect on the layout or size of their containing object. Similarly, the rules for standard layout types ignore the presence of any stateless subobjects (a class can be standard layout with public stateless members and private non-stateless members). And thus, two classes can be layout compatible even if they differ by the presence of stateless subobjects.
 
 Stateless subobjects otherwise have the same effects on their containing types as regular subobjects do. For example, a stateless subobject can cause its container to not be trivially copyable, if it has a non-trivial copy constructor (even though the object by definition has no state to copy).
 
@@ -80,7 +91,7 @@ The definition of "empty class" (per `std::is_empty`) must now be expanded. The 
 * Non-union class.
 * No virtual functions.
 * No virtual base classes.
-* No non-empty base classes.
+* No non-empty base classes (stateless base subobjects are, by definition, empty).
 * No non-stateless NSDMs.
 
 In all other ways, except where detailed below, a stateless subobject works identically to a non-stateless one. Stateless subobjects are initialized and destroyed just as if they were not stateless. Stateless subobjects undergo copy and move construction and assignment along with all other subobjects (though they will likely not be doing much). In particular, stateless subobjects are still members/base classes of the types that contain them, so aggregate initialization of members (and bases) will still have to take them into account:
@@ -98,7 +109,7 @@ In all other ways, except where detailed below, a stateless subobject works iden
 
 Note that the alignment of a stateless subobject will still impact the alignment of the containing class. A `stateless` member declaration can include an `alignas` specifier as well.
 
-### Stateless types
+## Stateless types
 
 The stateless property can be applied to (non-union) types as well:
 
@@ -117,28 +128,30 @@ The `stateless` keyword must be consistently associated with any forward declara
 
 And vice-versa.
 
-A stateless class definition is ill-formed if the class is not empty (per the expanded rules for empty classes).
+A stateless class definition is ill-formed if the class is not a PST. However, a stateless class definition is also il-formed if it has any subobjects that are not themselves of stateless types.
 
-The size of a stateless class is not modified by being stateless. Therefore, the size of a stateless class shall be no different from the size of any other empty class.
+The size of a stateless class is not affected by being stateless. Therefore, the size of a stateless class shall be no different from the size of any other PST class.
 
 The statelessness of a type can be conditional, just like subobjects:
 
 	template<typename T>
-	stateless(is_empty_v<T>) struct Foo : public T {};
+	stateless(is_stateless_v<T>) struct Foo : public T {};
 	
-Here, `Foo` may or may not be stateless, depending on whether `T` is empty. If the constant expression evaluates to `false`, then the class is not stateless.
+Here, `Foo` may or may not be stateless, depending on whether `T` is a stateless type. If the constant expression evaluates to `false`, then the class is not stateless.
 
-To make certain conditions easier, there will be the `stateless(auto)` syntax. When applied to a class declaration, `stateless(auto)` will cause the class to be stateless if the class is empty. If the class is not empty, then the class will not be stateless.
+To make certain conditions easier, there will be the `stateless(auto)` syntax. When applied to a class declaration, `stateless(auto)` will cause the class to be stateless if all of the subobjects are of stateless types.
 
-When a stateless class is used to create an object in a way that cannot have `stateless` applied to it, then the code behaves just as it would if the class did not have the `stateless` keyword. Therefore, you can heap allocate arrays of stateless classes, and they will function just like any heap allocated array of empty classes. You can declare an automatic variable of a stateless type, and it will behave as any empty class (note: implementations may optimize such objects to take up no stack space if possible, but they are not required to do so).
+When a stateless class is used to create an object in a way that cannot have `stateless` applied to it, then the code behaves just as it would if the class did not have the `stateless` keyword. Therefore, you can heap allocate arrays of stateless classes, and they will function just like any heap allocated array of PST classes. You can declare an automatic or global variable of a stateless type, and it will behave as any PST class (note: implementations are free to optimize such objects to take up no stack space if possible, but they are not required to do so).
 
 However, when a stateless class is used to declare a direct subobject of another type, that subobject will be implicitly stateless. It is perfectly valid to explicitly specify `stateless` on a member/base class of a stateless type as well. If the conditions on the two `stateless` properties do not agree (one resolves to true and the other false), then the program is il-formed.[^1]
 
+Stateless subobjects created through stateless classes are exempt from the [unique identity rule](#unique_rule).
+
 Declaring an array of a stateless type as an NSDM is forbidden. Stateless types may not be used as members of a union.
 
-The standard library does not need to have a traits class to detect if a type is stateless. A type with such a declaration can be used in any way that any type can, so `is_empty` is sufficient.
+The standard library will need a traits class to detect if a type is stateless, since being `stateless` does have other properties.
 
-### Stateless anonymous types
+## Stateless anonymous types
 
 Statelessness can be applied to anonymous types as well:
 
@@ -149,17 +162,62 @@ Statelessness can be applied to anonymous types as well:
 
 The `stateless` property applies to the struct declaration, not the variable. As such, `decltype(varName)` will be a stateless type if `Data` is a stateless type. Such declarations can only be made as non-static data members.
 
-## Implementation and Restrictions
+## Unique identity rule {#unique_rule}
 
-In a perfect world, the above would be the only restrictions on stateless types. C++ of course is never perfect.
+Any class which contains a subobject which is stateless (directly or indirectly) is subject to the unique identity rule. The goal of this rule is to ensure that each object within a struct has [unique identity](#identity) while fulfilling the layout needs of being `stateless`. This rule is as follows.
 
-### Memory locations
+For every subobject, recursively, of a class `T`, if that subobject is declared `stateless`, and that subobject is not of a `stateless` type, then look through `T`'s subobjects, recursively. If there is another subobject of that type, and that subobject is created from a different subobject *declaration*, then `T` violates the unique identity rule.
 
-In C++ as it currently stands, every object needs to have a memory location. And two separate objects of unrelated types cannot have the *same* memory location.
+Note that "different subobject declaration" means the following:
 
-Stateless subobojects effectively have to be able to break this rule. The memory location of a stateless subobject is more or less irrelevant. Since the type is stateless, there is no independent state to access. So one instance is functionally no different from another.[^2]
+    struct empty {};
+	struct holder { stateless empty e; };
+	
+	struct data
+	{
+		holder h1;
+		holder h2;
+	};
+	
+`h2.e` does not cause a violation of the unique identity rule. The reason being that `h1.e` and `h2.e` both come from the same declaration: the definition of `holder`.
 
-As such, the general idea is that a stateless subobject could have any address within the storage of the object which contains it. This means that a stateless subobject can have the same address as any other subobject in its containing object's type.
+By contrast, these would be illegal:
+
+	struct data2
+	{
+		holder h1;
+		empty e2; //Same type as `h1::e`, but different declaration.
+	};
+	
+	struct data2a
+	{
+		holder h1;
+		stateless holder h2; //Same type as `h1`, but different declaration.
+	};
+	
+Do note that the identity rule works even for derived classes and arrays of types that contain stateless subobjects:
+
+	struct data3 : public holder
+	{
+		holder h2;
+		holder hs[40];
+	};
+	
+This works because of standard layout rules. Or rather, because `data3` is *not* standard layout. Because of that, `data3::holder` and `data::h2` must have distinct addresses. And therefore, their stateless subobjects will as well.
+
+This does forbid many cases that theoretically could work. It may be possible to come up with more complex forms of this rule that allow stateless subobjects to be used in more places. But with added complexity comes the chance to get something wrong.
+
+# Design rationale
+
+A number of restrictions on the use of stateless types come from implementation restrictions or the needs of basic C++ assumptions about types. This section goes into detail about some of the rationales for the design decisions, as well as alternatives that were discarded.
+
+## Memory locations
+
+In C++ as it currently stands, every object needs to have a memory location. And in most cases two separate objects of unrelated types cannot have the *same* memory location.
+
+Stateless subobojects effectively have to be able to break this rule. The memory location of a stateless subobject is more or less irrelevant. Since the type is stateless, there is no independent state to access. So one instance is functionally no different from another (pursuant to the [unique identity rule](#identity)).
+
+As such, the general idea is that a stateless subobject could have any address within the storage of the object which contains it. This means that a stateless subobject can have the same address as any other subobject in its containing object's type. The standard has rules for zero-sized subobjects ([intro.object]/5-6). At present, only base classes can qualify ([class]/4), but we can build on the existing infrastructure for stateless subobjects.
 
 This is not really an implementation problem, since stateless subobojects by their very nature have no state to access. As such, the specific address of their `this` pointer is irrelevant. What we need, standard-wise, is to modify the rules for accessing objects and aliasing to allow a stateless subobject to have the same address as *any* other object. Because stateless objects have no value to access, we may not even need to change [basic.lval]/10.
 
@@ -169,7 +227,7 @@ Implementation-wise, the difficulty will be in changing how types are laid out. 
 
 The behavior of the *user* converting pointers/references between two unrelated stateless subobjects should still be undefined. We just need rules to allow stateless subobjects to be assigned a memory location at the discretion of the compiler, which may not be unique from other unrelated objects.
 
-### Stateless arrays
+## Stateless arrays
 
 This design expressly forbids the declaration of stateless member subobjects that are arrayed. The reason for this has to do with pointer arithmetic.
 
@@ -198,112 +256,53 @@ Option 1 is probably out due to various potential issues. #2 seems tempting, but
 
 In the current design, it is the *use* of a type which is stateless. Types can be declared stateless as well, but this really only means that all uses of them to declare objects will implicitly be stateless. So this restricts how the type may be used, but not the semantics of it.
 
-Because statelessness can be applied to any empty class at its point of use, if a user wants to be able to use an empty class in a non-stateless way, then they simply do not declare the class to be stateless.
+Because statelessness can be applied to any PST class at its point of use, if a user wants to be able to use an PST class in a non-stateless way, then they simply do not declare the class to be stateless.
 
 And therefore, if you declare a class to be stateless, you truly intend for it to only be used as a subobject of another type. This would be useful for a CRTP base class, for example, where it is a logical error to create an object of the class which is not a base class.
 
-### Trivial copyability
+## Trivial copyability
 
 Trivial copyability is another area that can be problematic with stateless subobjects. We explicitly forbid trivial copying into a base class subobject of another class ([basic.types]/2).
 
-Similarly, we must explicitly forbid trivial copying into stateless subobojects. Trivial copying *from* a stateless subobject should be OK. Though this is only "OK" in the sense that the program is not ill-formed or that there us undefined behavior. The value copied is undefined, but that doesn't matter, since you could only ever use that value to initialize a type that is layout compatible with an empty class. Namely, another empty class. And empty classes have no value.
+Similarly, we must explicitly forbid trivial copying into stateless subobojects. Trivial copying *from* a stateless subobject should be OK. Though this is only "OK" in the sense that the program is not ill-formed or that there us undefined behavior. The value copied is undefined, but that doesn't matter, since you could only ever use that value to initialize a type that is layout compatible with an PST class. Namely, another PST class. And PST classes have no value.
 
-### offsetof
+## offsetof
 
 `offsetof` will obviously not be affected by stateless subobject members of another type. However, if `offsetof` is applied to a stateless subobject, what is the result?
 
 I would suggest that this either be undefined or 0.
 
-# Potential issues
+## Unique identity problem {#identity}
 
-## Empty object identity {#identity}
+A non-virtual type with no data members or base class data members is empty of valid data. It has no real value representation. But under current C++ rules, it does have one important piece of state: itself.
 
-A type with no data members is empty of valid data. It has no real value representation. But under current C++ rules, it does have one important piece of state: itself.
+The present rules of C++ allow a number of cases where the addresses of two object instances are equal. This usually involves subobjects: base classes can have the same address as the derived class. The first member subobject often has the address of the containing class. And for standard layout, empty base classes will have the same address as the first member, which will have the same address as the containing class.
 
-The present rules of C++ require that every object have identity that is (almost) unique from every other object. There are two exceptions to this: a member subobject of a type may have a pointer value equal to the containing object. And base class subobject(s) may have pointer values equal to their derived classes.
+Despite all of this, there is one inviolate rule with subobject layout: for any two distinct objects of the same dynamic type `T`, they will have *different addresses*. Because of this rule, a type which is possibly stateless can grant itself state by using its `this` pointer as a unique identifier to access external state.
 
-However, the current rules effectively guarantee that, for any two distinct objects of the same dynamic type `T`, they will have *different addresses*. As such, it is possible for an empty type to have out-of-object state by using its `this` pointer as a unique identifier to access said state.
+As such, blindly applying `stateless` to any PST could have unpleasant consequences. The purpose of the [unique identity rule](#unique_rule) is to avoid situations where two such member subobjects could have the same address.
 
-The current version of stateless subobjects changes things so that it breaks that rule. If a type has two stateless subobjects of the same type, the compiler may assign them the same address. And if that type expects its object to have identity, the object's functionality may be broken.
-
-There are ways to resolve this problem.
-
-### Explicitly forbid the problem cases
-
-The problem arises because two stateless subobjects of the same type exist within the same containing type. So we can simply forbid that. This is a special case rule, much as we declare that types stop being standard layout if their first NSDM is the same type as one of their empty base classes.
-
-We declare that an object which has more than one stateless subobject of the same type (whether base class or member) is il-formed. This would be recursive, up the subobject containment hierarchy. However, it stops looking if it recurses through most non-stateless subobjects.
-
-Here are some examples to clarify things:
-
-	stateless struct no_state{};
-	struct multiple
-	{
-		no_state ns1;
-		no_state ns2;	//Il-formed, same type as before.
-	};
-
-	struct empty		//Empty, but not implicitly stateless.
-	{
-		no_state ns1;
-	};
-
-	struct contain1
-	{
-		stateless empty e;
-		no_state ns2;	//Il-formed, contains same type as stateless e.ns1
-	};
-
-	struct contain2 : stateless empty
-	{
-		no_state ns2;	//Il-formed, contains same type as stateless base class empty::ns1
-	};
-
-	struct works
-	{
-		empty e;
-		no_state ns2;	//Fine. `e` is empty but *not* stateless
-						//Thus `e` has identity, and so do all of its members.
-	};
-
-	struct fails : empty
-	{
-		no_state ns2;	//Il-formed. Base class is empty and by standard-layout rules
-						//has no identity.
-	};
-
-As noted in the last example, this would also require adding rules dealing with EBO interaction with stateless subobjects. There would also need to be a "first member" for non-stateless subobjects, similar to the standard layout rule.
-
-This would be quite complicated, but I think such rules can be hashed out.
-
-A first-pass at such a rule would be, for each stateless subobject, check:
-
-* Any stateless subobjects in the same object.
-* Any empty-but-not-stateless base class subobjects.
-	* Both of these recurse up the containment hierarchy.
-* The first non-stateless member subobject.
-	* Recursively check for stateless subobjects and empty-but-not-stateless base classes.
-	* Recursively check the first member subobject of each type.
+Various alternatives were considered to solve this problem.
 
 ### Ignore the problem
 
-We could just ignore the problem. After all, it would only be a problem in the most rare of circumstances, where:
+One solution considered was to just ignore the problem. The scope of the problem is such that it would only happen if:
 
-1. The user has created an empty type that gains state state through its identity.
+1. The user has created a PST that gains state state through its object identity.
 
 2. The user (or another user) uses this type as a stateless subobject.
 
-3. The user (or another user) uses this type as a stateless subobject more than once.
+3. The user (or another user) uses this type as a stateless subobject more than once in the same object.
 
-I would suggest that users who do #1 can defend themselves against #2 simply by declaring that the type has an NSDM of type `char`. Alternatively, we can define special syntax to allow users to actively prevent an empty type from being used as a stateless subobject.
+Users who do #1 can defend themselves against #2 simply by declaring that the type has an NSDM of type `char`. Alternatively, we can define special syntax to allow users to actively prevent a PST from being used as a stateless subobject.
 
 ### There is no problem
 
-Alternatively, we could redefine the problem. It only occurs when two or more stateless subobjects exist within the same stateless mass. So we can simply declare that, when that happens, the objects are *not distinct objects*. One is an alias for the other.
+Another solution examined was to redefine the problem. It only occurs when two or more stateless subobjects of the same type can alias each other within the same containing object. So we can simply declare that, when that happens, the objects are *not distinct objects*. One is an alias for the other.
 
 As such, we have identity only of the ultimate non-stateless containing subobject. If the user expects (given the above example) `multiple::ns1` and `multiple::ns2` to be different objects, then the user is simply wrong to think so.
 
-This sounds like the previous suggestion, but it really is different. In the previous suggestion, it's a corner case. With this suggestion, we conceptually re-evaluate what it means for a subobject to be stateless. That being stateless means that the object shares its identity with all other stateless objects in the same non-stateless container.
+This sounds like ignoring the problem, but it really is different. In the previous suggestion, it's a corner case. With this suggestion, we conceptually re-evaluate what it means to declare that a subobject is stateless. That being stateless means that the object shares its identity shall effectively lose its identity among any other subobjects of its own type within the same non-stateless containing object.
 
 That is, rather than declaring it to be an unfortunate bug, we embrace it as a feature. As such, we *actively forbid* implementations from allowing different stateless instances at the same level from having different addresses. `multiple::ns1` *must* have the same address as `multiple::ns2`.
 
@@ -319,23 +318,42 @@ In order for stateless subobjects of any kind to work, we declare that many obje
 
 As such, constructing one member subobject begins its lifetime. Constructing a second begins its lifetime. This leaves you with two objects of the same type in the same location of memory.
 
+### Only stateless types can be stateless subobjects
+
+With this solution, we make the assumption that, if a user declares that a type is `stateless`, then they are making a strong claim about this type. Namely that losing identity is perfectly valid, that it is reasonable for two objects of the same type to have the same address and live in the same memory.
+
+So we solve the problem by only permitting stateless subobjects of types that are themselves declared stateless. That way, we know that the user expects such types to alias. This also means that stateless types can only have subobjects of other stateless types (lest they be able to lose identity as well).
+
+This solves the unique identity problem by forcing the user to explicitly specify when it is OK to lose unique identity. However, it fails to solve the general problem of people using EBO as a means for having a stateless subobject. They will continue to do so, as the set of `stateless` declared objects will always be smaller than the set of PST types that qualify for EBO.
+
+### Explicitly forbid the problem cases
+
+The unique identity problem arises because two stateless subobjects of the same type exist within the same containing type. So we can simply forbid that. This is a special case rule, very similar to the one that prevents types from being standard layout if their first NSDM is the same type as one of their empty base classes.
+
+We declare that an object which has a stateless subobject that can alias with another instance of that type is il-formed. This would be recursive, up the subobject containment hierarchy. That's the general idea, but the current rule takes note of the fact that a stateless object cannot alias with other objects of its type if it is contained in the exact same object declaration.
+
 ### Only stateless types can lose identity
 
-This is effectively a combination of the first and third ideas.
+This is effectively a combination of the prior two ideas ideas. The design in this paper uses this solution, as defined by the [unique identity rule](#unique_rule).
 
-As currently presented here, a type declared `stateless` has very few differences from a type that is empty. The primary difference is that, if it is used to declare a subobject, then that declaration will implicitly be `stateless`.
+For all PST-but-not-stateless types, we apply a rule that forbids possible unique identity violations. However, if the type is declared `stateless`, then we know that the writer of the type has deliberately chosen to accept that the type lacks identity, so we permit them to be used without restriction.
 
-However, we can add certain features, based on the fact that the writer of the class declared it to be `stateless`. By declaring the class as such, we can define that the user has declared that the class *itself* lacks unique identity. As such, the user has entered into a contract that makes it clear that two subobjects of the same containing object refer to the same object.
+The current unique identity rule is quite conservative, leaving out situations where stateless subobjects cannot alias:
 
-Thus, we apply the third idea, but only to types which the user has explicitly blessed as such.
+	struct empty {};
+	struct alpha {stateless empty e;};
+	struct beta {stateless empty e;};
 
-For all empty-but-not-stateless types, we apply the first rule. If we declare a `stateless` subobjects for a type that is empty-but-not-stateless, compilation will fail if that type could alias with another instance of itself elsewhere within that object, recursively up the subobject hierarchy.
+	struct first
+	{
+		alpha a;
+		alpha b;	//Legal
+		beta c;		//Not legal.
+	};
 
-### Only stateless types can be stateless subojbects.
 
-With this solution, we use the assumption implicit in the previous idea (that if you declare a type to be `stateless`, then you are saying that your code will not rely on it having unique identity). And we simply say that a subobject can only be declared stateless if its type is explicitly declared stateless.
 
-This solves the unique identity problem by forcing the user to explicitly specify when it is OK to lose unique identity. However, it fails to solve the general problem of people using EBO as a means for having a stateless subobject. They will continue to do so, as the set of `stateless` declared objects will always be smaller than the set of empty types that qualify for EBO.
+# Potential issues
 
 ## The Unknown
 
@@ -379,6 +397,12 @@ The problem with this solution is that it does not solve the general stateless p
 
 # Changelist
 
+## From pre-release v3:
+
+* Applying one possible solution for the unique identity problem.
+* Adjusting design to accept the fact that `is_empty` is not enough to ensure viability for statelessness. We really need `is_empty` and `is_standard_layout`, thus provoking the need for PST.
+* Because stateless types mean something much stronger, it is now expressly forbidden to have subobjects of stateless types that are not stateless types.
+
 ## From pre-release v2:
 
 * Added details about the empty object identity problem, as well as a number of potential solutions.
@@ -388,6 +412,12 @@ The problem with this solution is that it does not solve the general stateless p
 * Clarified that stateless types act like regular empty types in all cases except when declared as direct subobjects of classes.
 
 * Explicitly noted that the alignment of stateless subobjects will be respected by their containers.
+
+# Standard notes:
+
+* [intro.object]/5-6: Explains how base classes can be zero sized. Also explains that different instances of the same type must have distinct addresses.
+* [basic.lval]/10: The "strict aliasing rule".
+* [class]/4: States that member subobjects cannot be zero sized. But explicitly does not mention base classes.
 
 # Acknowledgments
 
