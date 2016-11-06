@@ -1,4 +1,4 @@
-% Zero sized Subobjects and Stateless Types, pre-release v5
+% Zero sized Subobjects and Stateless Types, pre-release v6
 %
 % July 25, 2016
 
@@ -382,37 +382,39 @@ The unique identity problem arises because two zero sized subobjects of the same
 
 We declare that an object which has a zero sized subobject that can alias with another instance of that type is il-formed. This would be recursive, up the subobject containment hierarchy. That's the general idea, but the current rule takes note of the fact that a zero sized object cannot alias with other objects of its type if it is contained in the exact same object declaration.
 
-### Not quite zero sized
+### Relaxed zero sized rules
 
-Standard layout rules effectively side-step the unique identity problem by decreeing that a type which uses a base class more than once or has a base class that is the same type as its first NSDM (recursively) is not standard layout. And therefore, you no longer are guaranteed to have base classes not disturb the type's layout.
+Standard layout rules effectively side-step the unique identity problem by general fiat. They decree that a type which uses a base class more than once or has a base class that is the same type as its first NSDM (recursively) is not standard layout. And therefore, you no longer are guaranteed to have base classes not disturb the type's layout.
 
-So one possible solution is to make `zero_sized` behave like standard layout: the declaration is a *request*, not a requirement. If the type cannot build a layout to fulfill that request, then the compiler is allowed to insert arbitrary space to make it work out, so that all potentially aliasing subobjects have the same size.
+Now, an implementation is still permitted to allow an empty base to take up no space in the class's layout; this is the foundation of the Empty Base Optimization. But without standard layout's rules, there is no guarantee of it.
 
-To make this useful however, it has to have the same reliability that standard layout provides to empty layout base classes. So there would have to be some system of rules which, if the user follows them, will guarantee that the layout will not be impacted by any `zero_sized` subobjects. If it's not reliable, people will just go back to using standard layout types with EBO.
+So one possible solution for zero sized subobjects is to make them behave like standard layout: the declaration is a *request*, not a requirement. If the type cannot build a layout to fulfill that request, then the compiler is allowed to insert arbitrary space to make it work out, so that all potentially aliasing subobjects have distinct addresses.
 
-Indeed, it could simply be standard layout rules, with some additions. That is, building a class for which zero sized subobjects could alias means that the type is not standard layout. After all, people frequently do rely on zero sized base class subobjects, even when their types are not standard layout.
+To make this useful however, it has to have the same reliability that standard layout provides to empty layout base classes. After all, if it's not reliable, people will just go back to using standard layout types with EBO. So there would have to be some system of rules which, if the user follows them, will guarantee that the layout will not be impacted by any `zero_sized` subobjects. And this system of rules should hopefully not cut out too many use cases.
 
-The final rule of standard layout would thus become this. For the prospective type `T`:
+The best way to do this is to simply integrate it into standard layout rules. After all, this whole idea is based on having zero sized member subobjects behave like zero sized base class subobjects. So by integrating this into standard layout rules, we make that analogy into reality.
 
-Form a collection of subobject declaration in `T`, consisting of:
+If you use zero sized subobjects in a way that could cause them to alias, then the type is not standard layout. People frequently do rely on zero sized base class subobjects, even when their types are not standard layout. So for those cases, it becomes a matter of quality of implementation whether a subobject declared `zero_sized` really can be zero sized.
 
-* All member declared `zero_sized`, if they are not `stateless`
-* All base class subobjects, if they are not `stateless`
-* The first non-zero sized NSDM (if it is an array, then the first element)
+The change to the rule of standard layout is as follows. We replace the standard layout rules that forbid multiple instances of the same base class, and base classes matching the first member with a rule that does the same thing, but more generally. For the prospective type `T`:
 
-These rules are to be applied recursively for each type of these subobjects.
-
-The type `T` is not standard layout if, within this collection, there are two or more subobjects with the same type.
+> Gather a list of all aliasing subobjects of `T`. These consist of:
+>
+> * All member subobjects declared `zero_sized`, if they are not `stateless`
+> * All base class subobjects, if they are not `stateless`
+> * The first non-zero sized NSDM (if it is an array, then the first element). `stateless` types are always zero sized.
+>
+> Apply this rule to each individual type recursively, adding those subobjects to the list of aliasing subobjects.
+>
+> The type `T` is not standard layout if any two aliasing subobjects have the same type.
 
 Note that this rule explicitly exempts types declared `stateless`. Such types are intended to be able to alias, so their presence cannot break standard layout.
 
 This rule ensures that it is safe to assign the memory location of zero sized subobjects to the same location of their containing type. In non-standard layout cases, implementations may have to give the empty class storage to ensure that it does not alias.
 
-If the user wants a hard error if a type cannot satisfy the `zero_sized` requirement, they can apply `static_assert(is_standard_layout_v<T>);` wherever they wish.
+This also means that we will not strictly need `zero_sized(auto)` syntax. Since `zero_sized` is a request rather than a requirement, applying it to non-empty layout types is not a compile error. It is just a request which could not be fulfilled. However, to do that also means that we need a distinction between merely applying `zero_sized` to a subobject declaration and applying `zero_sized` to a subobject declaration who's type is empty layout.
 
-This also means that we will not strictly need `zero_sized(auto)` syntax. Since `zero_sized` is a request rather than a requirement, applying it to non-empty layout types is not a compile error. It is just a request which could not be fulfilled.
-
-While I personally dislike this solution (mainly because it makes `zero_sized` a suggestion rather than failing when it can't work), it does have the effect of having a rule that is comprehensive. The rule for standard layout types is simple and reasonable, covering existing base class cases as well as the new zero sized case. It allows stateless types to alias, while allowing the user to know when a zero sized type will be zero sized. At the same time, compilers have the freedom to add padding or even use existing padding to avoid aliasing.
+While I personally dislike this solution (mainly because it makes `zero_sized` a suggestion rather than failing when it can't work), it does have the effect of creating a rule that is comprehensive. The rule for standard layout types is simple and reasonable, covering existing base class cases as well as the new zero sized case. It allows stateless types to alias freely, so that they will guarantee layout. At the same time, compilers have the freedom to add padding or even use existing padding to avoid aliasing on types where that may not be appropriate.
 
 ### Only zero sized types can lose identity
 
@@ -476,6 +478,9 @@ As such, in that design, a class was declared stateless. Once this was done, tha
 The problem with this solution is that it does not solve the general zero sized problem outlined in the [motivation](#motivation) section.
 
 # Changelist
+
+## From pre-release v5:
+* Expanded on the possibilities of the `zero_sized`-as-hint rule, coupled with expanded Standard Layout rules.
 
 ## From pre-release v4:
 * Renamed "possibly-stateless type" to "empty layout type".
