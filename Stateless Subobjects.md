@@ -1,6 +1,6 @@
-% Stateless Subobjects and Types, v0.7
+% Stateless Subobjects and Types, pre-release v2
 %
-% July 7, 2016
+% July 13, 2016
 
 This proposal specifies the ability to declare member and base class subobjects which do not take up space in the objects they are contained within. It also allows the user to define classes which will always be used in such a fashion.
 
@@ -96,6 +96,8 @@ In all other ways, except where detailed below, a stateless subobject works iden
 	//It may have no state, but `f` must still be initialized.
 	aggregate agg = {{}, 4};
 
+Note that the alignment of a stateless subobject will still impact the alignment of the containing class. A `stateless` member declaration can include an `alignas` specifier as well.
+
 ### Stateless types
 
 The stateless property can be applied to (non-union) types as well:
@@ -128,7 +130,9 @@ Here, `Foo` may or may not be stateless, depending on whether `T` is empty. If t
 
 To make certain conditions easier, there will be the `stateless(auto)` syntax. When applied to a class declaration, `stateless(auto)` will cause the class to be stateless if the class is empty. If the class is not empty, then the class will not be stateless.
 
-When a stateless class is used to declare a direct subobject of another type, that subobject will be implicitly stateless. It is perfectly valid to explicitly specify `stateless` on a member/base class of a stateless type. If the conditions on the two `stateless` properties do not agree (one resolves to true and the other false), then the program is il-formed.[^1]
+When a stateless class is used to create an object in a way that cannot have `stateless` applied to it, then the code behaves just as it would if the class did not have the `stateless` keyword. Therefore, you can heap allocate arrays of stateless classes, and they will function just like any heap allocated array of empty classes. You can declare an automatic variable of a stateless type, and it will behave as any empty class (note: implementations may optimize such objects to take up no stack space if possible, but they are not required to do so).
+
+However, when a stateless class is used to declare a direct subobject of another type, that subobject will be implicitly stateless. It is perfectly valid to explicitly specify `stateless` on a member/base class of a stateless type as well. If the conditions on the two `stateless` properties do not agree (one resolves to true and the other false), then the program is il-formed.[^1]
 
 Declaring an array of a stateless type as an NSDM is forbidden. Stateless types may not be used as members of a union.
 
@@ -225,7 +229,7 @@ There has been many alternatives towards achieving the same ends. Every such alt
 1. Objects are defined by a region of storage.
 2. Two different object instances have different regions of storage.
 
-This current proposal focuses on avoiding changes to rule #1. Stateless subobjects in this proposal still have a non-zero size. Instead, changes to rule #2 are made to permit stateless objects to work.
+This current proposal is designed to avoid changes to rule #1. Stateless subobjects in this proposal still have a non-zero size. Instead, changes to rule #2 are made to permit such subobjects to be able to not disturb the layout of their container.
 
 Other alternatives take a different approach to dealing with these rules.
 
@@ -236,13 +240,21 @@ Other alternatives take a different approach to dealing with these rules.
 It would essentially declare a standard library type that is, in the context of this proposal, something like this:
 
 	template<typename T>
-	stateless(is_empty_v<T>) struct allow_zero_size : public T {...};
+	stateless(auto) struct allow_zero_size : public T {...};
 
 It is a wrapper which, when used as an NSDM, will not take up any space in its containing object if the given type is empty. And if it is not, then it will.
 
 The theoretical idea behind this is that it doesn't require new syntax. And in that proposal, `allow_zero_size` would not be forbidden from being in arrays or any of the other forbearances that this proposal forbids stateless types from.
 
 This makes the behavior of such a type rather more difficult to specify. The standard would still need to have changes to allow subobojects which take up no space to work, since users have to be able to get pointers/references to them and the like. Once that work is done, exactly how you specify that a subobject takes up no space does not really matter.
+
+# Changelist
+
+## From pre-release v1:
+
+* Clarified that stateless types act like regular empty types in all cases except when declared as direct subobjects of classes.
+
+* Explicitly noted that the alignment of stateless subobjects will be respected by their containers.
 
 # Acknowledgments
 
@@ -254,6 +266,7 @@ From the C++ Future Discussions forum:
 * Matt Calabrese
 * Andrew Tomazos
 * Matthew Woehlke
+* Bengt Gustafsson
 
 
 [^1]: It may be reasonable to use the logical `or` between the two, instead of failing on a mis-match.
