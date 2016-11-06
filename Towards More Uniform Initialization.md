@@ -115,19 +115,19 @@ The "special identifier" is an identifier that defines how the braced-init-list 
 
 Note that these are special identifiers, in accord with [lex.name]; they are not keywords.
 
-[over.match.list] specifies how a braced-init-list selects constructors from a class. It has a list of two bullet points, which specify two groups of functions it checks.
+[over.match.list] specifies how a braced-init-list selects constructors from a class. It has a list of two bullet points, which specify two groups of functions it checks, in that order.
 
 A braced-init-list which is "constructor-qualified" will skip the first bullet point. A "list-qualified" braced-init-list skips the second bullet point.
 
-Note that the qualification only affects the behavior of types with constructors. Aggregates, and even default constructor selection (from `{l:}` or {c:}`) proceeds exactly as normal. Conceptually, the idea is that an aggregate could be considered both a value list and a live object with a convenient constructor. And therefore, it can be initialized in either way.
+Note that this is the *only* behavioral difference caused by these qualifiers. Aggregates, and even default constructor selection (from `{l:}` or {c:}`) proceeds exactly as normal. Conceptually, the idea is that an aggregate could be considered both a value list and a live object with a convenient constructor. And therefore, it can be initialized in either way.
 
-This also means that `{l:}` can still call the default constructor, even though it's conceptually for `initializer_list` initialization. This does represent a bit of an incongruity, but it is not a surprising one, since `{}` will also call the default constructor even if an `initializer_list` constructor exists.
+This also means that `{l:}` will still call the default constructor, even though it's conceptually meant for `initializer_list` initialization. This does represent a bit of an incongruity, but it is not a surprising one, since `{}` will also call the default constructor even if an `initializer_list` constructor exists.
 
 With constructor-qualified lists, we can also allow all standard library `emplace`-style functions (including `make_tuple/unique/shared` and other things that don't rely on `allocator_traits::construct`) to work with aggregates.
 
-## Additional Utility
+## Explicit Qualification
 
-Since this syntax provides qualifications for braced-init-lists, we also have the ability to avoid some of the issues of list initialization.
+Since this syntax provides qualifications for braced-init-lists, it represents design space that we can use to fix another issue with list initialization.
 
 There is a distinction between copy-list-initialization and direct-list-initialization. The former is always used in cases where a braced-init-list is deducing the type being initialized. The only difference is that copy-list-initialization is il-formed if it selects an `explicit` qualified constructor.
 
@@ -157,4 +157,28 @@ We should not ask every user who writes an `initializer_list` constructor to go 
 
 This is a problem introduced by the language; therefore, it is best solved by the language. `std::enable_if`, and all of the complexity around it, is what we get when we try to solve language problems (lack of concept checking/`if constexpr`) with library solutions.
 
+## Alternative Qualification Syntax
 
+The proposal as it stands resolves the primary issue. But it has a specific flaw.
+
+The proposal suggests that `emplace`-like functions be updated to use constructor-qualified braced-init-lists. But what if someone wants to use `emplace` on a non-aggregate type, and to call an `initializer_list` constructor? That is, what if a person wanted to do the equivalent of this through emplacement:
+
+	SomeType t = {l: values};
+	vec.push_back(t);
+
+The person providing the values, under this design, does not have control over how those values get used.
+
+An older version of this idea included a way to forward that intent. It was done through the use of a pair of types: `constructor_qualified` and `list_qualified`. If the first value in a braced-init-list was a value of one of these types, then it would effectively be removed from the braced-init-list. But the list would be qualified in accord with the type.
+
+This proposal does not include this design. The use of a value in a list of values does permit greater control by the user. But it also adds complexity to the overall scheme. And the benefit is overall not that significant.
+
+## Qualifier Combinations
+
+Earlier versions of this proposal permitted the user to be able to specify combinations of qualifiers. The order of the qualifiers would specify the priority order of selection. So a `cl`-qualified list would look for non-`initializer_list` constructors first, then `initializer_list` constructors. And `lc` would have the same meaning as the current system.
+
+This was deemed unnecessary and ultimately not very useful. We only need a way to provide the user's intent: to call a constructor or to provide a list of values. The `lc` case is the current behavior and thus does not need a qualifier. And it is difficult to say when `cl` would ever be something a user would genuinely want.
+
+# Acknowledgments
+
+* Joël Lamotte: For coming up with the idea to use {:} syntax.
+* Malte Skarupke: For bringing up the issue of using uniform initialization in generic code.

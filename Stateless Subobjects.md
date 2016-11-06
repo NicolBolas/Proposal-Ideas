@@ -511,7 +511,7 @@ The problem with this solution is that it does not solve the general zero sized 
 From the C++ Future Discussions forum:
 
 * Avi Kivity
-* A. Joël Lamotte, who's original thread on [Inline Classes](https://groups.google.com/a/isocpp.org/d/msg/std-proposals/u35GIuJECcQ/Yorc58iiBwAJ) was the seed for this idea.
+* A. JoÃ«l Lamotte, who's original thread on [Inline Classes](https://groups.google.com/a/isocpp.org/d/msg/std-proposals/u35GIuJECcQ/Yorc58iiBwAJ) was the seed for this idea.
 * Vicente J. Botet Escriba
 * Matt Calabrese
 * Andrew Tomazos
