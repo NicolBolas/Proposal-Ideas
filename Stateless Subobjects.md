@@ -1,10 +1,10 @@
-% Stateless Subobjects and Types, pre-release v2
+% Stateless Subobjects and Types, pre-release v3
 %
 % July 13, 2016
 
 This proposal specifies the ability to declare member and base class subobjects which do not take up space in the objects they are contained within. It also allows the user to define classes which will always be used in such a fashion.
 
-# Motivation and Scope
+# Motivation and Scope {#motivation}
 
 An object is stateless, conceptually speaking, if it has no non-static data members. As such, the state of any particular instance is no different from another. Because of this, there is no conceptual reason why a stateless object needs to have a region of storage associated with it.
 
@@ -216,6 +216,127 @@ I would suggest that this either be undefined or 0.
 
 # Potential issues
 
+## Empty object identity {#identity}
+
+A type with no data members is empty of valid data. It has no real value representation. But under current C++ rules, it does have one important piece of state: itself.
+
+The present rules of C++ require that every object have identity that is (almost) unique from every other object. There are two exceptions to this: a member subobject of a type may have a pointer value equal to the containing object. And base class subobject(s) may have pointer values equal to their derived classes.
+
+However, the current rules effectively guarantee that, for any two distinct objects of the same dynamic type `T`, they will have *different addresses*. As such, it is possible for an empty type to have out-of-object state by using its `this` pointer as a unique identifier to access said state.
+
+The current version of stateless subobjects changes things so that it breaks that rule. If a type has two stateless subobjects of the same type, the compiler may assign them the same address. And if that type expects its object to have identity, the object's functionality may be broken.
+
+There are ways to resolve this problem.
+
+### Explicitly forbid the problem cases
+
+The problem arises because two stateless subobjects of the same type exist within the same containing type. So we can simply forbid that. This is a special case rule, much as we declare that types stop being standard layout if their first NSDM is the same type as one of their empty base classes.
+
+We declare that an object which has more than one stateless subobject of the same type (whether base class or member) is il-formed. This would be recursive, up the subobject containment hierarchy. However, it stops looking if it recurses through most non-stateless subobjects.
+
+Here are some examples to clarify things:
+
+	stateless struct no_state{};
+	struct multiple
+	{
+		no_state ns1;
+		no_state ns2;	//Il-formed, same type as before.
+	};
+
+	struct empty		//Empty, but not implicitly stateless.
+	{
+		no_state ns1;
+	};
+
+	struct contain1
+	{
+		stateless empty e;
+		no_state ns2;	//Il-formed, contains same type as stateless e.ns1
+	};
+
+	struct contain2 : stateless empty
+	{
+		no_state ns2;	//Il-formed, contains same type as stateless base class empty::ns1
+	};
+
+	struct works
+	{
+		empty e;
+		no_state ns2;	//Fine. `e` is empty but *not* stateless
+						//Thus `e` has identity, and so do all of its members.
+	};
+
+	struct fails : empty
+	{
+		no_state ns2;	//Il-formed. Base class is empty and by standard-layout rules
+						//has no identity.
+	};
+
+As noted in the last example, this would also require adding rules dealing with EBO interaction with stateless subobjects. There would also need to be a "first member" for non-stateless subobjects, similar to the standard layout rule.
+
+This would be quite complicated, but I think such rules can be hashed out.
+
+A first-pass at such a rule would be, for each stateless subobject, check:
+
+* Any stateless subobjects in the same object.
+* Any empty-but-not-stateless base class subobjects.
+	* Both of these recurse up the containment hierarchy.
+* The first non-stateless member subobject.
+	* Recursively check for stateless subobjects and empty-but-not-stateless base classes.
+	* Recursively check the first member subobject of each type.
+
+### Ignore the problem
+
+We could just ignore the problem. After all, it would only be a problem in the most rare of circumstances, where:
+
+1. The user has created an empty type that gains state state through its identity.
+
+2. The user (or another user) uses this type as a stateless subobject.
+
+3. The user (or another user) uses this type as a stateless subobject more than once.
+
+I would suggest that users who do #1 can defend themselves against #2 simply by declaring that the type has an NSDM of type `char`. Alternatively, we can define special syntax to allow users to actively prevent an empty type from being used as a stateless subobject.
+
+### There is no problem
+
+Alternatively, we could redefine the problem. It only occurs when two or more stateless subobjects exist within the same stateless mass. So we can simply declare that, when that happens, the objects are *not distinct objects*. One is an alias for the other.
+
+As such, we have identity only of the ultimate non-stateless containing subobject. If the user expects (given the above example) `multiple::ns1` and `multiple::ns2` to be different objects, then the user is simply wrong to think so.
+
+This sounds like the previous suggestion, but it really is different. In the previous suggestion, it's a corner case. With this suggestion, we conceptually re-evaluate what it means for a subobject to be stateless. That being stateless means that the object shares its identity with all other stateless objects in the same non-stateless container.
+
+That is, rather than declaring it to be an unfortunate bug, we embrace it as a feature. As such, we *actively forbid* implementations from allowing different stateless instances at the same level from having different addresses. `multiple::ns1` *must* have the same address as `multiple::ns2`.
+
+This also means that there is only one such object. This creates an interesting problem with object lifetime and construction/destruction calls. Indeed, any per-member compiler-generation function call.
+
+On the one hand, if there is only one such object, then there should only be one constructor and one destructor call. But there are two member variables, and having only one call would be weird. Indeed, the two objects could be subobjects of different stateless subobjects.
+
+What's worse is that, if the user declares a copy constructor or assignment operator, they will have to list both objects in their member initializer. If they declare an assignment operator, they have to list both objects.
+
+So the only logical alternative here is that you *have* to call the constructor multiple times. In which case, the object model has to change.
+
+In order for stateless subobjects of any kind to work, we declare that many objects of different types live in the same region of storage. In order for two stateless subobjects of the same type to live in the same region of storage, we have to declare that, since they have no value representation, then a memory location can conceptually hold any number of stateless subobjects of any type. Even if they are the same type.
+
+As such, constructing one member subobject begins its lifetime. Constructing a second begins its lifetime. This leaves you with two objects of the same type in the same location of memory.
+
+### Only stateless types can lose identity
+
+This is effectively a combination of the first and third ideas.
+
+As currently presented here, a type declared `stateless` has very few differences from a type that is empty. The primary difference is that, if it is used to declare a subobject, then that declaration will implicitly be `stateless`.
+
+However, we can add certain features, based on the fact that the writer of the class declared it to be `stateless`. By declaring the class as such, we can define that the user has declared that the class *itself* lacks unique identity. As such, the user has entered into a contract that makes it clear that two subobjects of the same containing object refer to the same object.
+
+Thus, we apply the third idea, but only to types which the user has explicitly blessed as such.
+
+For all empty-but-not-stateless types, we apply the first rule. If we declare a `stateless` subobjects for a type that is empty-but-not-stateless, compilation will fail if that type could alias with another instance of itself elsewhere within that object, recursively up the subobject hierarchy.
+
+### Only stateless types can be stateless subojbects.
+
+With this solution, we use the assumption implicit in the previous idea (that if you declare a type to be `stateless`, then you are saying that your code will not rely on it having unique identity). And we simply say that a subobject can only be declared stateless if its type is explicitly declared stateless.
+
+This solves the unique identity problem by forcing the user to explicitly specify when it is OK to lose unique identity. However, it fails to solve the general problem of people using EBO as a means for having a stateless subobject. They will continue to do so, as the set of `stateless` declared objects will always be smaller than the set of empty types that qualify for EBO.
+
 ## The Unknown
 
 One of the most difficult aspects of dealing with any form of stateless type system is that it represents something that is very new and very complicated for C++ to deal with. As such, the wording for this needs to be quite precise and comprehensive, lest we introduce subtle bugs into the standard.
@@ -248,7 +369,19 @@ The theoretical idea behind this is that it doesn't require new syntax. And in t
 
 This makes the behavior of such a type rather more difficult to specify. The standard would still need to have changes to allow subobojects which take up no space to work, since users have to be able to get pointers/references to them and the like. Once that work is done, exactly how you specify that a subobject takes up no space does not really matter.
 
+## Stateless by type declaration
+
+An older version of this idea permitted statelessness in a form similar to what is specified here. But that design evolved from the needs of inner classes and mixins, where it was solely on an implementation of a type to be used for a specific purpose.
+
+As such, in that design, a class was declared stateless. Once this was done, that type could only be used to declare objects as direct subobject of another type, and they would be implicitly stateless. Since both inner classes and mixins are intended for only those uses, that was not a significant limitation.
+
+The problem with this solution is that it does not solve the general stateless problem outlined in the [motivation](#motivation) section.
+
 # Changelist
+
+## From pre-release v2:
+
+* Added details about the empty object identity problem, as well as a number of potential solutions.
 
 ## From pre-release v1:
 
@@ -267,8 +400,8 @@ From the C++ Future Discussions forum:
 * Andrew Tomazos
 * Matthew Woehlke
 * Bengt Gustafsson
-
+* Thiago Macieira, who initially identified the unique identity problem.
 
 [^1]: It may be reasonable to use the logical `or` between the two, instead of failing on a mis-match.
 
-[^2]: Yes, it is be possible for an otherwise empty type to use its own `this` pointer as its state. This could be used to register itself with some global system or perform some other side-effect. The current rules ensure, even with EBO, that an empty object instance will always have a distinct `this` pointer from any other instance of that type. However, such types would be inappropriate to use as stateless types, since they are not logically stateless. Further, I find it highly unlikely that such code is sufficiently widespread to be much of a problem. It would be better for makers of such classes to simply declare an unused member of type `char`, to prevent themselves from being considered empty.
+[^2]: In theory, at any rate. [There is a discussion](#identity) of a case where empty types can effectively have state.
