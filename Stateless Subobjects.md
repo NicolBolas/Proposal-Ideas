@@ -1,6 +1,6 @@
 % Zero sized Subobjects and Stateless Types, pre-release v5
 %
-% July 19, 2016
+% July 25, 2016
 
 This proposal specifies the ability to declare member and base class subobjects which do not take up space in the objects they are contained within. It also allows the user to define classes which will always be used in such a fashion.
 
@@ -382,25 +382,6 @@ The unique identity problem arises because two zero sized subobjects of the same
 
 We declare that an object which has a zero sized subobject that can alias with another instance of that type is il-formed. This would be recursive, up the subobject containment hierarchy. That's the general idea, but the current rule takes note of the fact that a zero sized object cannot alias with other objects of its type if it is contained in the exact same object declaration.
 
-### Only zero sized types can lose identity
-
-This is effectively a combination of the prior two ideas ideas. The design in this paper uses this solution, as defined by the [unique identity rule](#unique_rule).
-
-For all PST-but-not-stateless types, we apply a rule that forbids possible unique identity violations. However, if the type is declared `stateless`, then we know that the writer of the type has deliberately chosen to accept that the type lacks identity, so we permit them to be used without restriction.
-
-The current unique identity rule is quite conservative, leaving out situations where zero sized subobjects cannot alias:
-
-	struct empty {};
-	struct alpha {zero_sized empty e;};
-	struct beta {zero_sized empty e;};
-
-	struct first
-	{
-		alpha a;
-		alpha b;	//Legal and no aliasing
-		beta c;		//Not legal but no aliasing
-	};
-
 ### Not quite zero sized
 
 Standard layout rules effectively side-step the unique identity problem by decreeing that a type which uses a base class more than once or has a base class that is the same type as its first NSDM (recursively) is not standard layout. And therefore, you no longer are guaranteed to have base classes not disturb the type's layout.
@@ -430,6 +411,27 @@ This rule ensures that it is safe to assign the memory location of zero sized su
 If the user wants a hard error if a type cannot satisfy the `zero_sized` requirement, they can apply `static_assert(is_standard_layout_v<T>);` wherever they wish.
 
 This also means that we will not strictly need `zero_sized(auto)` syntax. Since `zero_sized` is a request rather than a requirement, applying it to non-empty layout types is not a compile error. It is just a request which could not be fulfilled.
+
+While I personally dislike this solution (mainly because it makes `zero_sized` a suggestion rather than failing when it can't work), it does have the effect of having a rule that is comprehensive. The rule for standard layout types is simple and reasonable, covering existing base class cases as well as the new zero sized case. It allows stateless types to alias, while allowing the user to know when a zero sized type will be zero sized. At the same time, compilers have the freedom to add padding or even use existing padding to avoid aliasing.
+
+### Only zero sized types can lose identity
+
+This is effectively a combination of some of the previous ideas. The design in this paper uses this solution, as specified with the [unique identity rule](#unique_rule).
+
+For all PST-but-not-stateless types, we apply a rule that forbids possible unique identity violations. However, if the type is declared `stateless`, then we know that the writer of the type has deliberately chosen to accept that the type lacks identity, so we permit them to be used without restriction.
+
+The current unique identity rule is quite conservative, leaving out situations where zero sized subobjects cannot alias:
+
+	struct empty {};
+	struct alpha {zero_sized empty e;};
+	struct beta {zero_sized empty e;};
+
+	struct first
+	{
+		alpha a;
+		alpha b;	//Legal and no aliasing
+		beta c;		//Not legal but no aliasing
+	};
 
 # Potential issues
 
