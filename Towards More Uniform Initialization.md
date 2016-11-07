@@ -82,7 +82,7 @@ This maintenance problem is faced by any function you might add overloads to, bu
 
 That is extremely important, because the only way to resolve the uniform initialization ambiguity currently is to stop using uniform initialization syntax. This answer is functional on some level, but it does lead to problems.
 
-For example, there is a reported defect in C++11, about the use of `emplace` functions on containers (effectively, anything that calls `std::allocator_trait::construct`). Namely, that you can't call `emplace` functions on a container of aggregates, because aggregates by definition do not have constructors (besides the default and copy/move constructors). The proposed resolution of this is to have the standard `std::allocator_traits::construct` method detect whether the type is an aggregate via the type-traits, and use constructor or aggregate initialization on it as appropriate.
+For example, there is a [reported defect in C++][1], about the use of `emplace` functions on containers (effectively, anything that calls `std::allocator_trait::construct`). Namely, that you can't call `emplace` functions on a container of aggregates, because aggregates by definition do not have constructors (besides the default and copy/move constructors). The proposed resolution of this is to have the standard `std::allocator_traits::construct` method detect whether the type is an aggregate via the type-traits, and use constructor or aggregate initialization on it as appropriate.
 
 Why doesn't `std::allocator_traits::construct` simply use uniform initialization? Because uniform initialization cannot be trusted to do the right thing. The right thing in this case being to use aggregate initialization for aggregates or take the elements of the braced-init-list as constructor parameters. Hence the name of the function: construct.
 
@@ -96,7 +96,7 @@ Some types can only be constructed in one way or the other; a `std::unique_ptr` 
 
 Uniform initialization syntax does not offer the user the ability to specify this intent when initializing an object. It intermingles the two. Other initialization syntaxes do let you specify which; constructor syntax is the exclusive domain of a parameter sequence, but it cannot be used with aggregates.
 
-This is not a theoretical problem with the syntax. It is an actual, real problem which people face. [Advice is being offered based on this issue, suggesting that people avoid it.](http://probablydance.com/2013/02/02/the-problems-with-uniform-initialization/) Others suggest freely using uniform initialization, without any warning about these problems. So we have one set of users who are being told to avoid it where possible, while another set are being told to always use it.
+This is not a theoretical problem with the syntax. It is an actual, real problem which people face. [Advice is being offered based on this issue, suggesting that people avoid it.][2] Others suggest freely using uniform initialization, without any warning about these problems. So we have one set of users who are being told to avoid it where possible, while another set are being told to always use it.
 
 That is not a good situation.
 
@@ -182,3 +182,12 @@ This was deemed unnecessary and ultimately not very useful. We only need a way t
 
 * Joël Lamotte: For coming up with the idea to use {:} syntax.
 * Malte Skarupke: For bringing up the issue of using uniform initialization in generic code.
+
+# References:
+
+* LWG issue [#2089][1]
+* [N4462](http://wg21.link/N4462): LWG 2089, Towards more perfect forwarding, Ville Voutilainen
+* [The Problems With Uniform Initialization][2]
+
+[1]: http://cplusplus.github.io/LWG/lwg-active.html#2089
+[2]: http://probablydance.com/2013/02/02/the-problems-with-uniform-initialization/

@@ -151,7 +151,7 @@ The statelessness of a type can be conditional:
 
 This will declare `Foo` to be a stateless type if all of its subobjects are also stateless. Note that, even if `stateless(auto)` is used, the class definition must not have array member subobjects.
 
-The fact that a class is declared stateless has no effect on most uses of that type. When using the type to create an object that is not a subobject of another type, everything behaves normally.Therefore, you can heap allocate arrays of stateless classes, and they will function just like any heap allocated array of PST classes. You can declare an automatic or global variable of a stateless type, and it will behave as any PST class (note: implementations are free to optimize such objects to take up no space if possible, but they are not required to do so).
+The fact that a class is declared stateless has no effect on most uses of that type. When using the type to create an object that is not a subobject of another type, everything behaves normally.Therefore, you can heap allocate arrays of stateless classes, and they will function just like any heap allocated array of empty layout classes. You can declare an automatic or global variable of a stateless type, and it will behave as any empty layout class (note: implementations are free to optimize such objects to take up no space if possible, but they are not required to do so).
 
 However, when a stateless class is used to declare a direct subobject of another type, that subobject declaration will implicitly be zero sized. It is perfectly valid to explicitly specify `zero_sized` on a member/base class of a stateless type as well.
 
@@ -314,7 +314,7 @@ In the current design, it is the *use* of a type which is zero sized. Because th
 
 Trivial copyability is another area that can be problematic with zero size subobjects. We explicitly forbid trivial copying into a base class subobject of another class ([basic.types]/2).
 
-Similarly, we must explicitly forbid trivial copying into zero sized subobojects. Trivial copying *from* a zero sized subobject should be OK. Though this is only "OK" in the sense that the program is not ill-formed or that there us undefined behavior. The value copied is undefined, but that doesn't matter, since you could only ever use that value to initialize a type that is layout compatible with an PST class. Namely, another PST class. And PST classes have no value.
+Similarly, we must explicitly forbid trivial copying into zero sized subobojects. Trivial copying *from* a zero sized subobject should be OK. Though this is only "OK" in the sense that the program is not ill-formed or that there us undefined behavior. The value copied is undefined, but that doesn't matter, since you could only ever use that value to initialize a type that is layout compatible with an empty layout class. Namely, another empty layout class. And empty layout classes have no value.
 
 ## offsetof
 
@@ -344,7 +344,7 @@ One solution considered was to just ignore the problem. The scope of the problem
 
 3. The type is used as a zero sized subobject which aliases with another instance of itself within the same object.
 
-Users who do #1 can defend themselves against #2 simply by declaring that the type has an NSDM of type `char`. Alternatively, we can define special syntax to allow users to actively prevent a PST from being used as a stateless subobject.
+Users who do #1 can defend themselves against #2 simply by declaring that the type has an NSDM of type `char`. Alternatively, we can define special syntax to allow users to actively prevent a empty layout from being used as a stateless subobject.
 
 ### There is no problem
 
@@ -374,7 +374,7 @@ With this solution, we make the assumption that, if a user declares that a type 
 
 So we solve the problem by only permitting zero sized subobjects of types that are themselves declared stateless. That way, we know that the user expects such types to alias. This also means that stateless types can only have subobjects of other stateless types (lest they be able to lose identity as well).
 
-This solves the unique identity problem by forcing the user to explicitly specify when it is OK to lose unique identity. However, it fails to solve the general problem of people using EBO as a means for having a zero sized subobject. They will continue to do so, as the set of `stateless` declared objects will always be smaller than the set of PST types that qualify for EBO.
+This solves the unique identity problem by forcing the user to explicitly specify when it is OK to lose unique identity. However, it fails to solve the general problem of people using EBO as a means for having a zero sized subobject. They will continue to do so, as the set of `stateless` declared objects will always be smaller than the set of empty layout types that qualify for EBO.
 
 ### Explicitly forbid the problem cases
 
@@ -420,7 +420,7 @@ While I personally dislike this solution (mainly because it makes `zero_sized` a
 
 This is effectively a combination of some of the previous ideas. The design in this paper uses this solution, as specified with the [unique identity rule](#unique_rule).
 
-For all PST-but-not-stateless types, we apply a rule that forbids possible unique identity violations. However, if the type is declared `stateless`, then we know that the writer of the type has deliberately chosen to accept that the type lacks identity, so we permit them to be used without restriction.
+For all empty layout-but-not-stateless types, we apply a rule that forbids possible unique identity violations. However, if the type is declared `stateless`, then we know that the writer of the type has deliberately chosen to accept that the type lacks identity, so we permit them to be used without restriction.
 
 The current unique identity rule is quite conservative, leaving out situations where zero sized subobjects cannot alias:
 
