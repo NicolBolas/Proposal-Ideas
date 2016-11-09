@@ -1,110 +1,67 @@
-% Towards More Uniform Initialization
+% Towards More Uniform Initialization, to fix LWG 2089
 %
-%
+% 
 
-Brace-bounded lists of values were originally confined to use with aggregate initialization. In the development of C++11, the idea was proposed to extend this to include non-aggregate types through the use of a special `initializer_list` type.
+[LWG issue 2089][1] outlines a problem with using `emplace`-style construction of objects. The user passes such functions a list of values, and the function forwards these values to the constructor of a particular type.
 
-This idea was ultimately extended into what became known as uniform initialization: one could initialize any type via the use of a braced-init-list. Doing so provides a number of advantages, among them is that initialization behavior is fully uniform: it works the same everywhere. Automatic type deduction and the elimination of the most vexing parse were also benefits. In a perfect world, we would always use uniform initialization and never use direct constructor syntax again.
+The problem is that aggregates, by definition, do not have a constructor. Therefore, `emplace`-style functions cannot be used to initialize them. However, we do have so-called "uniform initialization syntax", which can call constructors or perform aggregate initialization, as is appropriate to the type being constructed.
 
-However, despite being called "uniform initialization", it cannot be uniformly used everywhere, due to a critical flaw that prevents its use towards these ends. This proposal intends to correct this flaw, thus allowing it to be used in all possible cases of object construction, while having well-defined results.
+Unfortunately, we cannot simply declare that `emplace`-style functions will use braced-init-lists. This is because such lists have a preference for `initializer_list` constructors where available, and this preference can break existing code that relied on `emplace`-style functions to call a non-`initializer_list` constructor.
 
-# Motivation and Scope
+This paper evaluates the problem and current proposed solution, and presents a better solution to this issue.
 
-The flaw in uniform initialization is quite simple to see in the standard library. The `std::vector` type has an explicit constructor which takes a single `std::vector::size_type`, which is an integral type. `std::vector` also has a constructor that takes an `initializer_list<T>`.
+# Flaws in the Proposed Solution
 
-For most types, these constructors can coexist with uniform initialization quite reasonably. For example:
+LWG 2089 outlines a proposed library-only solution. `allocator::construct` would perform as follows:
 
-	std::vector<A> v1{20};
-	std::vector<A> v2{A{}};
-	std::vector<A> v3{A{}, A{}, A{}};
+> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_constructible<U, Args...>::value` is `true`, else `::new((void *)p) U{std::forward<Args>(args)...}`
 
-In this example, `v1` is an array of 20 value-constructed values. `v2` is an array of 1 value-constructed element. `v3` is an array of 3 value-constructed elements.
+Ignoring the fact that this solution does not solve the problem for `emplace`-like functions that do not rely on `allocator::construct` (`make_unique/shared` and the like), this has a significant flaw.
 
-This is all well and good, right up until we change the type of the `vector`:
+`is_constructible` is true if the type can be constructed with the given argument types. This seems like the right question, but it may not be the question the user actually expects.
 
-	std::vector<int> v1{20};
-	std::vector<int> v2{int{}};
-	std::vector<int> v3{int{}, int{}, int{}};
+Under the current standard, the `emplace` call will fail if the type is not constructible with the given arguments. This could be for two reasons: 1) the type is an aggregate, or 2) the type doesn't have an appropriate constructor for the parameter list. Consider the following type:
 
-This uses exactly the same pattern of code as before, but now it has fundamentally different results. `v2` and `v3` retain their old meaning. But `v1` is now very different. It is an array containing a single element, the number 20. Why?
-
-Because uniform initialization syntax always prefers initializer list constructors if one is available that would fit the given braced-init-list. This is a consequence of uniform initialization syntax using the same syntax as initializer lists: the braced-init-list. And since `std::vector<int>::vector(std::initializer_list<int>)` matches the braced-init-list `{20}`, it will be preferred over `std::vector<int>::vector(std::vector<int>::size_type)`.
-
-This is a problem because there is *no way* to get at the `size_type` constructor via uniform initialization syntax. There is nothing we can employ which will cause the conflicting `initializer_list` constructor to be ignored or to do anything else that would allow us to get at a different set of constructors.
-
-Now, this may seem like a rather unimportant issue. After all, if I know that I have to use constructor initialization with `vector<int>`, then I can simply do that. But consider code that is generic on the `vector`'s type:
-
-	template<typename T>
-	std::vector<T> MakeVector()
+	class Something
 	{
-	  return std::vector<T>{20};
-	}
+	public:
+		Something(int);
+		Something(std::initializer_list<int>);
+	};
 
-By all rights, this code should always do the same thing: return a `vector` containing 20 value-initialized elements. But it does not. `MakeVector<int>()` will return a `vector` containing exactly one element.
+If the user passes a single integer to `emplace`, then the first constructor will be called. If the user passes a pair of integers, then (under the current standard) a compile error will result, since there is no matching constructor.
 
-This is of much greater concern when dealing with more intricate templates. Consider the following trivial template function:
+However, with the above fix, `is_constructible` will return `false`. Therefore, `emplace` will use list-initialization with the parameters. And since they match up against an `initializer_list` constructor, that will be called.
 
-	template<typename T>
-	T Process()
-	{
-	  T t{};
-	  //do stuff with t;
-	  return T{t};
-	}
+The question is this: is that what the user *wanted to happen*?
 
-This function creates a temporary, does some processing, and returns a copy of it. This function `Process` should have a concept requirement that `T` be DefaultConstructible and CopyConstructible, in addition to whatever "do stuff with `t`" requires.
+Well, this behavior is very incongruent with current list-initialization rules, which prefer `initializer_list` constructors over regular ones. If you did `Something{10}`, this would call the `initializer_list` constructor. Whereas calling `emplace(10)` will call the regular constructor. And yet, Something{10, 20} will have the same effect as `emplace(10, 20)`: calling the `initializer_list` constructor.
 
-The problem is the last line. This line may violate the concept constraints of `Process`. Why? Because there is no guarantee that `T` does not have an `initializer_list` constructor that can match with a `T`. For an example of such a class, consider `std::vector<std::function<void()>>` as our `T`.
+I suspect that users would find this to be surprising. A user would probably expect `emplace` for a non-aggregate to either act exactly like list-initialization or act like constructor initialization. They would not expect it to have behavior that is distinct from both language-based cases.
 
-The problem is that `std::function` has a non-explicit constructor that can take any type that is CopyConstructible. And `std::vector<std::function>` is CopyConstructible. Therefore, this will call the `initializer_list` constructor. But the template function should not be calling the initializer list constructor; it's not part of the allowed interface to `T`. Therefore, `Process` violates the concept constraint that it imposed on `T`, through no fault on the user's part.
+A more correct fix for this problem would be this:
 
-What this means is that you cannot use uniform initialization in generic code where the exact type of the object being constructed is derived from a template parameter. This is because there is no way for the user to explicitly choose which constructors to call.
+> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_aggregate<U>::value` is `false`, else `::new((void *)p) U{std::forward<Args>(args)...}`
 
-# Investigating the Flaw
+Of course, `is_aggregate` is not currently a type trait. But the general idea is clear: such an emplace function will either call the constructor for the arguments you passed, or it will use aggregate initialization.
 
-Normally in C++, if the attempt to deduce the parameters for a function call would result in two or more equally-preferred functions, the compiler would complain. This would force the user to use an explicit conversion in some part of the function call, thus allowing them to explicitly resolve the ambiguity.
+I submit that this aggregate-based form is more likely to give users the behavior that they expect and *desire* from `emplace`-style functions. It allows users the freedom to select exactly how they want to construct the type. If they want to call an `initializer_list` constructor, they simply spell it out at the call site: `emplace(initializer_list<int>{...})`. If they do not, then they don't spell it out.
 
-The flaw in C++11's uniform initialization is based on such an ambiguity. This flaw comes up because C++ forces a specific resolution of the ambiguity, rather than giving the user the opportunity to resolve the ambiguity with some specific syntax. The ambiguity is quite simple: For some type `T`, what does this mean?
+# A Language Solution
 
-	T t{5};
+The above outlines a purely library-based approach. But, as Ville Voutilainen outlined in N4462, it is very difficult for the user to make their own `emplace`-style functions that exhibit this behavior. It requires using `enable_if` gymnastics; even with concepts added to the core language, it still requires a lot of effort from the user.
 
-If `T` is an aggregate, the rules say that `t` will be aggregate initialized. If `T` is a non-aggregate type, then a constructor of some kind will be called. However, in order to allow container types like `std::vector` to take sequences of uniform values, the C++11 rules do something very strange. They allow the braced-init-list to match, not only constructor signatures that take the given values, but also to match against constructors that take a single non-default value of `initializer_list` type. If the braced-init-list can be used to build an `initializer_list` that matches an initializer-list constructor, then that constructor will be called.
+Therefore, a language solution seems like a good way to give the user the power to handle this.
 
-The problem is that this now creates ambiguity between the list of constructors who take the braced-init-list's values as parameters, and the list of initializer-list constructors who take the braced-init-list as a single parameter.
+The goals of the solution are to:
 
-C++ normally would resolve such ambiguity with a compiler error. In function overload resolution, this would force the user to explicitly resolve the call, using some syntax. In particular, the tool of choice is an explicit cast or conversion of some kind. However, in the attempt to create completely uniform syntax, it was decided to use an ad-hoc rule to resolve the ambiguity. Thus, initializer-list constructors are preferred over non-initializer-list constructors.
+1. Permit `emplace`-like forwarding functions in the standard library to initialize aggregates, without breaking existing code and without accidentally calling the wrong function.
 
-This means that there are constructors that can be hidden entirely from uniform initialization syntax. And therefore, the when the user writes `T t{5};` in some template code, they can never be certain of what this will actually do. This makes uniform initialization extremely unreliable.
+2. Allow the user to easily write their own `emplace`-like forwarding functions, which will have identical behavior to the standard library ones.
 
-It also creates a serious maintenance problem. Consider a library that exposes some type that users are able to use. Users may be using uniform initialization syntax to construct these types. Now, what if the maintainer of the library wants to add an initializer-list constructor? Suddenly, perfectly functioning code is now broken.
+3. Make it easy for the caller of the `emplace` function to specify whether they want to invoke `initializer_list` constructors or not. In particular, try to avoid having the user spell out `std::initializer_list<typename>` when they want to use an `initializer_list` constructor.
 
-This maintenance problem is faced by any function you might add overloads to, but there are two differences. First, the breakage in the function overloading case is noisy; the code that became ambiguous is ill-formed. While this is annoying for users who's code used to work, at least it's not silently doing the wrong thing. With the uniform initialization case, the code silently starts doing something highly unexpected. But the bigger problem is that the function case can be easily resolved via appropriate explicit casts and conversion.
-
-That is extremely important, because the only way to resolve the uniform initialization ambiguity currently is to stop using uniform initialization syntax. This answer is functional on some level, but it does lead to problems.
-
-For example, there is a [reported defect in C++][1], about the use of `emplace` functions on containers (effectively, anything that calls `std::allocator_trait::construct`). Namely, that you can't call `emplace` functions on a container of aggregates, because aggregates by definition do not have constructors (besides the default and copy/move constructors). The proposed resolution of this is to have the standard `std::allocator_traits::construct` method detect whether the type is an aggregate via the type-traits, and use constructor or aggregate initialization on it as appropriate.
-
-Why doesn't `std::allocator_traits::construct` simply use uniform initialization? Because uniform initialization cannot be trusted to do the right thing. The right thing in this case being to use aggregate initialization for aggregates or take the elements of the braced-init-list as constructor parameters. Hence the name of the function: construct.
-
-The proposed resolution to the defect requires template metaprogramming tricks involving `std::enable_if`-bound function calls. While C++ versions will eventually be able to use cleaner techniques like concepts, the fact remains that if uniform initialization cannot handle something like this, there clearly must be something wrong with it. This is after all what uniform initialization is for: initializing aggregates like objects. But you can't do that if you want to avoid initializer-list constructors.
-
-The fundamental problem arises due to a conceptual error in uniform initialization: the lack of the user's intent. When a user writes `T t{5};`, they generally have some expectation about what this code is supposed to do. They have some concept of what operations they expect to be legal on `T`, and they therefore expect something specific to happen when it is called.
-
-When initializing a value, there are two conceptual ways to want to initialize it. One could construct an object by providing a series of parameters who's values may or may not be of uniform type. These parameters will be used in some way in constructing that object's data, but there would not be a general expectation that the parameter's values would be directly accessible in the resulting object. Alternatively, the user could provide a list of values of uniform type, usually under the assumption that such a list will be stored in the object or otherwise reflected in that object's contents.
-
-Some types can only be constructed in one way or the other; a `std::unique_ptr` can only be constructed from a series of parameters. A `std::array` can only be constructed from a sequence of values that specify its contents. However, some types can be constructed from both in different circumstances; `std::vector` could be built from parameters, but it could also be built using a series of values that it will be initialized with. Aggregates are a special case, as one can conceptually treat an aggregate as either a constructed object or a container of values, depending on how you think about it. Or sometimes both at once.
-
-Uniform initialization syntax does not offer the user the ability to specify this intent when initializing an object. It intermingles the two. Other initialization syntaxes do let you specify which; constructor syntax is the exclusive domain of a parameter sequence, but it cannot be used with aggregates.
-
-This is not a theoretical problem with the syntax. It is an actual, real problem which people face. [Advice is being offered based on this issue, suggesting that people avoid it.][2] Others suggest freely using uniform initialization, without any warning about these problems. So we have one set of users who are being told to avoid it where possible, while another set are being told to always use it.
-
-That is not a good situation.
-
-# Design
-
-The problem is that the user lacks the ability to specify which kind of initialization they want. The solution... is to give the user the ability to specify which kind of initialization they want.
-
-So we will provide the ability to qualify a braced-init-list. A braced-init-list can be qualified in this way:
+Surprisingly, a solution to all of these can be done that requires only one syntactic change (along with the appropriate language for elements around this change). The solution here is to provide a way to qualify a braced-init-list; qualified lists affect exactly how the list is used to initialize a type. The syntax will be as follows:
 
 	{<special identifier>: ...}
 
@@ -115,68 +72,69 @@ The "special identifier" is an identifier that defines how the braced-init-list 
 
 Note that these are special identifiers, in accord with [lex.name]; they are not keywords.
 
-[over.match.list] specifies how a braced-init-list selects constructors from a class. It has a list of two bullet points, which specify two groups of functions it checks, in that order.
+[over.match.list] specifies how list-initialization selects constructors for a class. This section has two bullet points, which specify two groups of constructors list-initialization checks, in the given order.
 
-A braced-init-list which is "constructor-qualified" will skip the first bullet point. A "list-qualified" braced-init-list skips the second bullet point.
+An unqualified braced-init-list uses both bullet points, in the given order. A braced-init-list which is constructor-qualified will skip the first bullet point. A list-qualified braced-init-list will skip the second bullet point.
 
-Note that this is the *only* behavioral difference caused by these qualifiers. Aggregates, and even default constructor selection (from `{l:}` or {c:}`) proceeds exactly as normal. Conceptually, the idea is that an aggregate could be considered both a value list and a live object with a convenient constructor. And therefore, it can be initialized in either way.
+This permits us to resolve LWG 2089 as follows:
 
-This also means that `{l:}` will still call the default constructor, even though it's conceptually meant for `initializer_list` initialization. This does represent a bit of an incongruity, but it is not a surprising one, since `{}` will also call the default constructor even if an `initializer_list` constructor exists.
+> Effects: `::new((void *)p) U{c: std::forward<Args>(args)...}`
 
-With constructor-qualified lists, we can also allow all standard library `emplace`-style functions (including `make_tuple/unique/shared` and other things that don't rely on `allocator_traits::construct`) to work with aggregates.
+This has identical effects to the `is_aggregate` version suggested above, but is far more concise. Of course, this would be used in any forwarding-to-constructor type function in the standard library (in-place construction on types like `any`, calls to `make_shared/unique`, etc).
 
-## Explicit Qualification
+The syntax is very easy to use and learn. Indeed, people may begin to default to using `{c:}` syntax when constructing all types. This would permit the general use of list initialization for all types, without having to worry about `initializer_list` constructors getting in the way. Users would only switching to `{l: }` when they explicitly need to call an `initializer_list` constructor.
 
-Since this syntax provides qualifications for braced-init-lists, it represents design space that we can use to fix another issue with list initialization.
+As such, one could say that this feature makes "uniform initialization" truly uniform.
 
-There is a distinction between copy-list-initialization and direct-list-initialization. The former is always used in cases where a braced-init-list is deducing the type being initialized. The only difference is that copy-list-initialization is il-formed if it selects an `explicit` qualified constructor.
+To resolve the other problem, the ease of passing `initializer_list`s to functions, we make one more change. One that is rather obvious, given qualified braced-init-lists.
 
-Even so, C++ developers have been trying to cut down on typename repetition since C++11 gave us `auto`, `decltype`, and similar constructs like return type deduction in C++14. But even the latter does not stop us from putting return types in signatures. So in many cases, the typename already exists in the signature.
+As it currently stands, the statement `auto x = {...};` will always deduce to an `initializer_list`, based on the types provided. However, template argument deduction cannot deduce `{...}` into an `initializer_list`. This was done for good reasons; namely, that you don't know exactly what the user meant when they wrote `{...}`. So you force them to state their intent explicitly.
 
-The presence of `explicit`-qualified constructors makes `return {...};` problematic, since many constructors really are special. Therefore, we could add an additional special identifier to qualified braced-init-lists:
+But since list-qualified lists are specially qualified, the person who wrote them has already *expressed* their intent. Therefore, we can decide that they can be deduced in template arguments in exactly the same way as for `auto x = {...};`. Furthermore, we should also say that constructor-qualified lists cannot be deduced as `initializer_list`s at all. As such, `auto x = {c: ...};` should fail to compile.
 
-* `e`: The braced-init-list is "explicit-qualified".
+Therefore, users who want to pass an `initializer_list` to an `emplace` function need only do `emplace({l: ...})`.
 
-An explicit-qualified list uses direct-list-initialization, regardless of the context it is in.
+This also means that `auto x{l: 10};` will always deduce to a single-element `initializer_list<int>`, while `auto x{10};` will become an `int` (per C++17 rules). So this uniformity is another advantage of the syntax.
 
-This qualifier should be able to be combined with `c` or `l`. Therefore, `return {ce: ...};` should be both explicit-qualified and constructor-qualified. Though most initializer_list constructors are not marked `explicit`, so it shouldn't be needed much with list qualification.
+## Oddities of the Syntax
 
-## Compatibility with Designated Initializers
+This syntax does create some circumstances that a user might not expect. List-qualified lists are capable of performing initialization that does not involve `initializer_list`s. Because the only different (with regard to initializing a type) between a list-qualified initialization and unqualified initialization is the selection of constructors, list-qualified initialization is capable of initializing things in non-list-like fashions.
 
-These should not interfere with designated initializer syntax. Since at present, such syntax can only be used to initialize an aggregate, it is legal to qualify any such braced-init-list with `c` or `l`. Though it is not very useful to do so.
+[dcl.list.init]/3 lists many circumstances that are checked well before a the constructor behavior that list-qualified initialization changes. Perhaps the most unexpected circumstance is paragraph 3.2: the invocation of aggregate initialization, exactly as if the braced-init-list were not qualified.
 
-# Alternative Solutions
+It makes perfect sense to be able to use list-qualified list-initialization on many aggregates, since aggregates can be arrays. Some struct aggregate contain arrays or have members that are like arrays. For example a 3D vector type may store its members as `x`, `y`, and `z` instead of an array, but initializing them as a list seems perfectly reasonable.
 
-## Library Solutions
+The question is whether it reasonable to ever see `{l: "a string"s, 10, std::vector<int>{10, 20, 30};}` in code? Given a struct aggregate that has members of those types, would a user expect to be able to initialize it with a list-qualified init-list?
 
-Originally, I considered a library-based solution to the issue. This would have required adding a special opaque type taken as a parameter to various calls. Since the opaque type is different from other types, it would prevent the braced-init-list from binding to an `initializer_list` constructor, thus disambiguating the call.
+Qualified initialization, as proposed above, would do nothing to prevent this. And while it seems semantically incorrect, we wouldn't be actually breaking any code by permitting this.
 
-This is problematic for two reasons. First, it adds some complexity to various container classes, as they now have to prevent the user from using the opaque type as the member or allocator types (to prevent constructor overload resolution problems). But the primary reason that this is not a good solution is because it only solves the problem for the standard library. Every library user would have to concoct a solution, hopefully one using the same opaque types the standard library uses.
+If this is deemed to be unwanted behavior, we could declare that a non-empty list-qualified list must be able to deduce an `initializer_list` of some kind (as if by `auto x = {l: ...};`), even if the list is used for aggregate initialization or initializes an `initializer_list` of a different type than the deduced one. That last one is important, as we still want non-narrowing conversions to work:
 
-We should not ask every user who writes an `initializer_list` constructor to go though and add a suffix parameter to various functions that could interfere. While it is true that overload resolution is something the developers have to think off when adding new overloads, they are still able to add different constructors so long as the user can use some kind of explicit conversion to resolve the ambiguity. But no such syntax exists for uniform initialization.
+	std::vector<float> f{l: 1, 2, 3, 4};
 
-This is a problem introduced by the language; therefore, it is best solved by the language. `std::enable_if`, and all of the complexity around it, is what we get when we try to solve language problems (lack of concept checking/`if constexpr`) with library solutions.
+The list `{l: 1, 2, 3, 4}` would naturally deduce to `initalizer_list<int>`. But `vector<float>` only takes an `initializer_list<float>` And we still want that code to work. So what we should do is ensure that deduction is possible, not that the deduced type is what ultimately gets used.
 
-## Alternative Qualification Syntax
+Then again, such a rule may be more complex than it is worth.
 
-The proposal as it stands resolves the primary issue. But it has a specific flaw.
+## Typed List Qualified Initialization
 
-The proposal suggests that `emplace`-like functions be updated to use constructor-qualified braced-init-lists. But what if someone wants to use `emplace` on a non-aggregate type, and to call an `initializer_list` constructor? That is, what if a person wanted to do the equivalent of this through emplacement:
+Indeed, this brings up an issue that we may be able to fix with a modification of this feature. Consider the `vector<vector<float>>` type. If you attempt to use `emplace_back({l: 1, 2, 3, 4})`, that will deduce to the wrong type of list. And `vector`'s `initializer_list` constructor takes exactly and only one type of `initializer_list`, so this will result in a compile failure.
 
-	SomeType t = {l: values};
-	vec.push_back(t);
+Now, given that we're working with completely new syntax, we could also add syntax to cover this. For example, we could permit the use of `{l typename: ...}`, which would always deduce to `initializer_list<typename>`.
 
-The person providing the values, under this design, does not have control over how those values get used.
+It is less clear exactly how this should behave. Consider this:
 
-An older version of this idea included a way to forward that intent. It was done through the use of a pair of types: `constructor_qualified` and `list_qualified`. If the first value in a braced-init-list was a value of one of these types, then it would effectively be removed from the braced-init-list. But the list would be qualified in accord with the type.
+	std::vector<float> f{l int: 1, 2, 3, 4};
+	
+On the surface, this seems decidedly incoherent, as if the author didn't know what they really wanted. And yet, it could be allowed.
 
-This proposal does not include this design. The use of a value in a list of values does permit greater control by the user. But it also adds complexity to the overall scheme. And the benefit is overall not that significant.
+If the rule is that the `<typename>` will only be used in deduced contexts, then this will function just fine. If instead we say that `{l typename: ...}` will always generate a `initializer_list<typename>{...}`, then this would not work. But this would mean that `{l typename:} syntax could never be used on an aggregate, which means that even the following would not be allowed:
 
-## Qualifier Combinations
+    float arr[] = {l float: 1.0f, 2.0f, 3.0f, 4.0f};
 
-Earlier versions of this proposal permitted the user to be able to specify combinations of qualifiers. The order of the qualifiers would specify the priority order of selection. So a `cl`-qualified list would look for non-`initializer_list` constructors first, then `initializer_list` constructors. And `lc` would have the same meaning as the current system.
+While one might question the repetition of using  `float` twice (rather than `auto`), consider a struct aggregate that stored an array of floats. The use of `l float` here would simply be making it clear what's being initialized.
 
-This was deemed unnecessary and ultimately not very useful. We only need a way to provide the user's intent: to call a constructor or to provide a list of values. The `lc` case is the current behavior and thus does not need a qualifier. And it is difficult to say when `cl` would ever be something a user would genuinely want.
+A way to get around this would be to say that if you used a list-and-type-qualified list, and that initialization considers `initializer_list` constructors (per [over.match.list]'s bullet point 1), then the only constructors which take `initializer_list<typename>` are considered. So the above `vector<float>` example will fail to compile, while still preserving the ability of such lists to initialize aggregates.
 
 # Acknowledgments
 
@@ -186,8 +144,7 @@ This was deemed unnecessary and ultimately not very useful. We only need a way t
 # References:
 
 * LWG issue [#2089][1]
-* [N4462](http://wg21.link/N4462): LWG 2089, Towards more perfect forwarding, Ville Voutilainen
-* [The Problems With Uniform Initialization][2]
+* [N4462][2]: LWG 2089, Towards more perfect forwarding, Ville Voutilainen
 
 [1]: http://cplusplus.github.io/LWG/lwg-active.html#2089
-[2]: http://probablydance.com/2013/02/02/the-problems-with-uniform-initialization/
+[2]: http://wg21.link/N4462
