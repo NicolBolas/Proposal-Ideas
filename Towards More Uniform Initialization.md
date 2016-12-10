@@ -1,4 +1,4 @@
-% Towards More Uniform Initialization, to fix LWG 2089
+% Towards Fix LWG 2089
 %
 % 
 
@@ -6,9 +6,9 @@
 
 The problem is that aggregates, by definition, do not have a constructor. Therefore, `emplace`-style functions cannot be used to initialize them. However, we do have so-called "uniform initialization syntax", which can call constructors or perform aggregate initialization, as is appropriate to the type being constructed.
 
-Unfortunately, we cannot simply declare that `emplace`-style functions will always use braced-init-lists. This is because such lists have a preference for `initializer_list` constructors where available, and this preference can break existing code that relied on `emplace`-style functions to call a non-`initializer_list` constructor.
+Unfortunately, we cannot simply declare that `emplace`-style functions will always use braced-init-lists. There are actually several reasons for this (which will be discussed below). One of the principle reasons is that such lists have a preference for `initializer_list` constructors where available, and this preference can break existing code that relied on `emplace`-style functions to call a non-`initializer_list` constructor.
 
-This paper evaluates the problem and current proposed solution, and presents a more user-friendly, language-based solution to this issue.
+This paper evaluates the problem and current proposed solution. It also goes deeper than that, evaluating the fundamental problem that LWG 2089 represents.
 
 # Flaws in the Proposed Solution
 
@@ -35,21 +35,187 @@ However, with the above fix, `is_constructible` will return `false`. Therefore, 
 
 The question is this: is that what the user wanted or expected to happen?
 
-Well, this behavior is very incongruent with current list-initialization rules, which prefer `initializer_list` constructors over regular ones. If you did `Something{10}`, this would call the `initializer_list` constructor. Whereas calling `emplace(10)` will call the regular constructor. And yet, `Something{10, 20}` will have the same effect as `emplace(10, 20)`: calling the `initializer_list` constructor.
+This behavior is very incongruent with current list-initialization rules, which prefer `initializer_list` constructors over regular ones. If you did `Something{10}`, this would call the `initializer_list` constructor. Whereas calling `emplace(10)` will call the regular constructor. And yet, `Something{10, 20}` will have the same effect as `emplace(10, 20)`: calling the `initializer_list` constructor.
 
-I suspect that users would find this to be surprising. A user would probably expect `emplace` for a non-aggregate to either act exactly like list-initialization or act like constructor initialization. They would not expect it to have behavior that is distinct from both language-based cases.
+I suspect that users would find this to be surprising. A user would probably expect `emplace` for a non-aggregate to either act exactly like list-initialization or act like constructor initialization, with aggregate initialization used only for actual aggregates. They would not expect it to have behavior that is distinct from both language-based cases.
 
-A more correct fix for this problem would be this:
+At the same time, the following is not an adequate solution either:
 
 > Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_aggregate<U>::value` is `false`, else `::new((void *)p) U{std::forward<Args>(args)...}`
 
-Of course, `is_aggregate` is not currently a type trait. But the general idea is clear: such an emplace function will either call the constructor for the arguments you passed, or it will use aggregate initialization.
+Ignoring that `is_aggregate` is not an actual type trait, the problem here is dealing with this unusual circumstance<a name="agg-problem"/>:
 
-I submit that this aggregate-based form is more likely to give users the behavior that they expect and *desire* from `emplace`-style functions. It allows users the freedom to select exactly how they want to construct the type. If they want to call an `initializer_list` constructor, they simply spell it out at the call site: `emplace(initializer_list<int>{...})`. If they do not, then they don't spell it out.
+	struct Agg
+	{
+		int i;
+	};
+
+	class Value
+	{
+	public:
+		operator Agg() const {...}
+	};
+
+	Agg a1(Value{});
+	Agg a2{Value{}};
+
+The important fact here is that, while aggregates do not have user-provided constructors, users can still call default constructors and copy/move constructors. As such,the initialization of `a1` works, because `Value` is implicitly convertible to `Agg`, and thus it can invoke the copy constructor.
+
+The initialization of `a2` does *not* work, because it attempts to use aggregate initialization. However, the `is_aggregate` version of `emplace` will *always* use aggregate initialization on aggregates, regardless of what types the user passes. Thus, the `is_aggregate`-based fix represents a backwards-incompatible change, because right now `vector<Agg>::emplace(Value{})` is perfectly valid code.
+
+Therefore, a complete fix which is backwards-compatible without invoking `initializer_list` constructors improperly would be the following<a name="proposed"/>:
+
+> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_constructible<U, Args...>::value` is `true`, else `::new((void *)p) U{std::forward<Args>(args)...}` if `is_aggregate<U>` is true, else il-formed.
+
+This version will only use list-initialization on actual aggregates, and only when constructor initialization is not possible. It therefore represents a more targeted fix.
+
+# The Case for a Language Solution
+
+The above outlines a purely library-based approach. But, as Ville Voutilainen outlined in [N4462][ville], it is difficult for the user to build their own equivalent to `allocator::construct`, one which exhibits this exact behavior. And that was for the LWG 2089 solution; the one outlined here requires even more coding.
+
+Given C++17 features, the code is not so difficult to write:
+
+	template<typename T, typename ...Args>
+	auto initialize(Args &&...args)
+	{
+		if constexpr(is_constructible_v<T, Args...>)
+			return T(std::forward<Args>(args)...);
+		else if constexpr(is_aggregate_v<T>)
+			return T{std::forward<Args>(args)...};
+		else
+			static_assert(false, "Cannot initialize with parameters");
+		end
+	}
+
+The standard library could provide this template function, so that users do not have to write this every time they want to do `emplace`-style construction on their own.
+
+One of the problems with this is that users will have to be *taught* to use this function. By default, users will do something like this:
+
+	template<typename ...Args>
+	auto emplace(Args &&...args)
+	{
+		return T(std::forward<Args>(args)...);
+	}
+
+A slightly-more clever user might even think that using `T{std::forward<Args>(args)...};` would be even better, since it could initialize aggregates. Such a user would be decidedly unaware of the [pitfalls of such an approach][ui problem], but this is true of many users.
+
+Providing an `initialize` function will solve the problem for savvy C++ users, but it will not solve the problem for the more rank-and-file users, who learn primarily through experience.
+
+Furthermore, even if `initialize` were to become widely used, we still have a problem. If a user wants to use `emplace` construction with a list of values that should represent a call to an `initializer_list` constructor, they have to spell this out very verbosely at the call site: `emplace(initializer_list<int>{1, 3, 5})`. By contrast, if they were doing it manually, they could do `T t = {1, 3, 5};`, without having to explicitly provide either the `initializer_list` typename or the template parameter given to `initalizer_list`.
+
+Even if we manage to find a way to deduce the `initializer_list` template parameter from the arguments (via C++17 template constructor mapping syntax, perhaps), it still requires the user to spell out a long typename.
+
+# A Survey of Initialization
+
+`emplace`-style functions have an interface that takes two things:
+
+1. A type to be constructed.
+
+2. A list of values to construct it with.
+
+The core problem we have is trying to take "a list of values" and map that to the correct form of initialization for some type `T`. The problem is this: what exactly is "the correct form of initialization"?
+
+C++ has numerous forms of initialization for various objects. These forms of initialization use different syntax.
+
+When working directly with `T`, a user has the ability to select the "correct form" explicitly. But when working through `emplace`-style functions, the user lacks such tools. The *only* thing they can provide is a sequence of values of distinct types.
+
+Thus, the core problem is this: we must define a single initialization form which, from *a sequence of values alone*, will allow the user to select the "correct form of initialization" for them. If a type is a class type, the user should be able to call every legal constructor on that type. If the type is an aggregate, the user should be able to initialize that aggregate in every way that they could if they were directly creating the object with those values.
+
+The goal is not necessarily to use the same syntax as if one were initializing it directly. The goal is to have one form that provides access to all other forms.
+
+So let us look at the various currently-existing forms of initialization. The purpose here is to see which initialization syntaxes provide coverage of various forms of initialization. With such a survey, we may be able to determine some commonalities that will allow us to resolve this issue more effectively.
+
+## Uniform initialization for aggregates
+
+List initialization was the first attempt to provide a way to say that an any object could be initialized from a sequence of values alone. Of course, the name "uniform initialization" is a misnomer precisely because it failed to achieve this goal. But let us look at precisely where it failed.
+
+List initialization attempts to combine several forms of initialization that existed in C++98/03: constructor initialization and aggregate initialization. From a high-level perspective, there seems to be no overlap here: aggregates don't have constructors, and types with constructors aren't aggregates.
+
+Which leads to the [flaw previously mentioned](#agg-problem): the fact that while aggregates don't have user-provided constructors, they still (potentially) have default, copy, and move constructors. [dcl.list.init]/3.1 does attempt to wallpaper over this hole in the initialization rules, but it only covers types which are either the aggregate type or a type derived from it. Types which are convertible to it are not handled.
+
+Changing 3.1 to include all types implicitly convertible to the aggregate type would provoke problems:
+
+	struct OuterAgg;
+
+	struct InnerAgg
+	{
+		int i;
+		operator OuterAgg() const;
+	};
+
+	struct OuterAgg
+	{
+		InnerAgg agg;
+		float f = 5.0f;
+	};
+
+	InnerAgg::operator OuterAgg() const { return {{i}, 2.0f}; }
+
+	OuterAgg a1(InnerAgg{});
+	OuterAgg a2{InnerAgg{}};
+
+Both `a1` and `a2` work, but they both do different things. `a1` invokes implicit conversion of the `InnerAgg` to `OuterAgg`, then calls the copy constructor. Therefore, `a1.f` will be 2.0f.
+
+By contrast, `a2` invokes aggregate initialization. `a2.agg` will be initialized by the temporary, while `a2.f` will be initialized by the default member initializer. Therefore, `a2.f` will be 5.0f.
+
+So if [dcl.list.init]/3.1 were to include implicit conversions, we would lose the ability to invoke do `a2` *entirely*. Furthermore, if `InnerAgg` was not implicitly convertible, then `a1` would fail to compile. And if `InnerAgg` was not the first member of the aggregate, then `a2` would fail to compile.
+
+And our [proposed fix for LWG 2089](#proposed) (whether it's that one or the original fix LWG 2089) has the same problem. `OuterAgg` is always constructible from `InnerAgg`; therefore, we will get `a1` behavior instead of `a2`. And there is no way to undo that.
+
+By contrast, if we used the "fix" that only tests `is_aggregate`, then the caller of the `emplace` function can select the type of initialization they desire. They would do this by explicit conversion: `emplace(OuterAgg(InnerAgg{}))` would invoke convert-and-copy/move behavior, while `emplace(InnerAgg{})` will perform aggregate initialization.
+
+Of course, that is a backwards incompatible change.
+
+
+
+## List initialization narrowing
+
+There is another issue with list initialization. Consider the following:
+
+	struct T
+	{
+	  unsigned char c;
+	};
+
+	T t{2};
+	
+This is valid code. But it is only valid because it uses a constant expression; take that away:
+
+	auto val = 2;
+	T t{val};
+	
+And quite suddenly, this fails to compile.
+
+List initialization in all of its forms precludes narrowing conversions. This also means that the non-aggregate equivalent that has a constructor `T(unsigned char)` also cannot be called like this.
+
+This is one of the main reasons why we cannot 
+
+
+## List initialization for non-aggregates
+
+That brings us to the classic point-of-failure for list-initialization. The old issue
+
+
+
+If we made the change to 3.1, such that it also looks at implicit conversions, then both lines would do the same thing. Indeed, there would be *no way* to provoke aggregate initialization with just one parameter.
+
+An interesting question is this. Under the current 3.1 wording, is there a way to differentiate these two cases with the [above proposed fix](#proposed) to 2089? The answer is... yes.
+
+If the user were initializing an object via `emplace` calls, and we apply our fix defined above, the user can do this: . With the current wording, the user can access the appropriate kind of initialization. But to do so, they must be explicit about what they are doing.
+
+One might also argue that making this explicit also helps make it more clear what's going on. In the former case, we see the "convert and copy"; in the latter case, we see no conversion and copying, so a user may not expect there to be such behavior.
+
+Notice however that performing the implicit conversion requires using a cast operation. Here, we use a constructor-style cast rather than a C-style cast or a `static_cast`. But the important part is that we cannot use list initialization to get this kind of conversion.
+
+
+
+
+
+
 
 # A Language Solution
 
-The above outlines a purely library-based approach. But, as Ville Voutilainen outlined in [N4462][2], it is very difficult for the user to build their own equivalent to `allocator::construct`, one which exhibits this exact behavior. If we provide an `is_aggregate` trait, the simplest this code would get is something like this:
+The above outlines a purely library-based approach. But, as Ville Voutilainen outlined in [N4462][ville], it is very difficult for the user to build their own equivalent to `allocator::construct`, one which exhibits this exact behavior. If we provide an `is_aggregate` trait, the simplest this code would get is something like this:
 
 	template<typename T, typename ...Args>
 	auto initialize(Args &&...args)
@@ -135,7 +301,7 @@ Such an initializer list can also be used as the argument to an `emplace` functi
 
 ## Ambiguous Solutions
 
-A long outstanding problem with braced-init-lists is the issue of initializer-list constructors hiding other constructors. This is problematic to the point where [some people suggest avoiding such syntax entirely to avoid an unexpected "gotcha"][3], or at least avoiding it in template code.
+A long outstanding problem with braced-init-lists is the issue of initializer-list constructors hiding other constructors. This is problematic to the point where [some people suggest avoiding such syntax entirely to avoid an unexpected "gotcha"][ui problem], or at least avoiding it in template code.
 
 The most famous ambiguous example being `vector<T>{5}`. For most `T`s, that create 5 default-constructed elements. But if `T` happens to be an integer type, it will create a one-element `vector` that contains the number "5". If `T` is a template parameter to a function/class, then the writer of the code does not know which will be called.
 
@@ -199,9 +365,10 @@ A way to get around this would be to say that if you used a typed-list-qualified
 # References
 
 * LWG issue [#2089][1]
-* [N4462][2]: LWG 2089, Towards more perfect forwarding, Ville Voutilainen
-* [The Problems With Uniform Initialization][3], Malte Skarupke
+* [N4462][ville]: LWG 2089, Towards more perfect forwarding, Ville Voutilainen
+* [The Problems With Uniform Initialization][ui problem], Malte Skarupke
 
 [1]: http://cplusplus.github.io/LWG/lwg-active.html#2089
-[2]: http://wg21.link/N4462
-[3]: http://probablydance.com/2013/02/02/the-problems-with-uniform-initialization/
+[ville]: http://wg21.link/N4462
+[ui problem]: http://probablydance.com/2013/02/02/the-problems-with-uniform-initialization/
+[4]: http://ideone.com/n5q0CW
