@@ -6,9 +6,9 @@
 
 The problem is that aggregates, by definition, do not have a constructor. Therefore, `emplace`-style functions cannot be used to initialize them. However, we do have list initialization, which can call constructors or perform aggregate initialization, as is appropriate to the type being constructed.
 
-Unfortunately, we cannot simply declare that `emplace`-style functions will always use list initialization. There are actually several reasons for this. One of the principle reasons is that such lists have a preference for `initializer_list` constructors where available, and this preference can break existing code that relied on `emplace`-style functions to call a non-`initializer_list` constructor.
+Unfortunately, we cannot simply declare that `emplace`-style functions will always use list initialization. This would not be backwards compatible with existing code. Even if that were not true, it would hide access to certain constructors.
 
-This paper evaluates the problem and current proposed solution. It also goes deeper than that, evaluating the fundamental problem that LWG 2089 represents.
+This paper evaluates the current solution, presents a hopefully better one, and suggests a number of ways to expose this solution to users.
 
 # Flaws in the Proposed Solution
 
@@ -65,7 +65,7 @@ The initialization of `a2` does *not* work, because it attempts to use aggregate
 
 <a name="proposed"/>Therefore, a complete fix which is backwards-compatible while making sure not to invoke `initializer_list` constructors improperly would be the following:
 
-> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_constructible<U, Args...>::value` is `true`, else `::new((void *)p) U{std::forward<Args>(args)...}` if `is_aggregate<U>` is true, else il-formed.
+> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_constructible<U, Args...>::value` is `true`, else `::new((void *)p) U{std::forward<Args>(args)...}` if `is_aggregate<U>` is true, else ill-formed.
 
 This version will only use list-initialization on actual aggregates, and only when constructor initialization is not possible. It therefore represents a more targeted fix.
 
@@ -108,11 +108,24 @@ There is no single syntax that can possibly allow both via an `emplace(InnerAgg{
 
 So long as such cases are a rarity, the syntax should be adequate.
 
+<a name="disuniform"/>There is also the issue of non-uniformity in initialization. In order to use these initialization forms, you really need to know *what* you're initializing.
+
+For example, using `emplace` for an aggregate type like `std::array` will not look like `emplace` for a user-defined type like `std::vector`. While both would respond to uniform initialization syntax in the same way, `emplace` initialization cannot do so:
+
+	vector<array<int, 2>> va;
+	vector<vector<int>> vv;
+	va.emplace_back(1, 2); //Initializes the aggregate.
+	vv.emplace_back(initializer_list<int>{1, 2}); //Calls an initializer list constructor.
+	
+The syntax for `va` cannot be used with `vv`, and vice-versa.
+
+Much like the prior issue, there's not much of a way around it.
+
 # A New Form of Initialization
 
-It is vital to understand that, by implementing *any* backwards-compatible form of fix for LWG 2089, we will be inventing a *new form* of initialization. It is a means of initializing objects which is a unique combination of initialization, reliant on other forms yet the collection is distinct from them. And we will be standardizing this initialization form, employing it throughout the standard library.
+It is vital to understand that, by implementing *any* backwards-compatible form of fix for LWG 2089, we will be inventing a *new form* of initialization. It is a means of initializing objects which is a unique set of initialization rules, reliant on other forms yet the collection is distinct from them. And we will be standardizing this initialization form, employing it throughout the standard library.
 
-By applying this new initialization form to all `emplace`-style APIs, users will need to be aware of its behavior. As Ville Voutilainen outlined in [N4462][ville], it is very important for users to be able to use this form of initialization as well. When a user goes to implement their own `emplace`-style APIs, we want them to have the same behavior.
+By applying this new initialization form to all `emplace`-style APIs, users will need to be aware of its behavior. As Ville Voutilainen outlined in [N4462][ville], it is very important for users to be able to not merely understand this form of initialization, but to write it into their own APIs. When a user goes to implement their own `emplace`-style APIs, we want them to have the same behavior.
 
 ## Standard Library Function
 
@@ -134,17 +147,17 @@ Obviously, this requires the addition of an `is_aggreate` trait.
 
 ## Possible Language Features
 
-The most important reason to prefer a language feature over a library function is that we are creating a new form of initialization, one which will be used throughout the standard library. As such, users will need to be familiar with it. By giving it C++ syntax, it is much more discoverable than a utility function buried in the C++ standard library. As such, users will be better able to make it work for them.
+The most important reason to prefer a language feature over a library function is that we are creating a new form of initialization, one which will be used throughout the standard library. As such, users will need to be familiar with it. By giving it C++ syntax, it will be much more discoverable than a utility function buried in the C++ standard library. As such, users will be better able to make it work for them.
 
-If we create a good language feature for using this kind of initialization, users will instinctively gravitate to it when writing their own `emplace`-style functions. This will promote a consistent feel for this kind of initialization.
+If we create a good language feature for using this kind of initialization, users will instinctively gravitate to it when writing their own `emplace`-style functions. This will promote a consistent initialization syntax in those circumstances. The hope is that we can also create an initialization syntax that could be more widely used.
 
-We shall analyze two syntactic approaches to providing this form of initialization:
+We shall analyze several syntactic approaches to providing this form of initialization:
 
 ### 1: Constructor Syntax Extension
 
-As it currently stands, constructor syntax cannot invoke aggregate initialization. We could change that. If we do, then the [rules proposed here](proposed) naturally fall out. Constructor syntax will use the existing rules, and any syntax which would be il-formed when applied to an aggregate will instead invoke aggregate initialization if the type is an aggregate.
+As it currently stands, constructor syntax cannot invoke aggregate initialization. We could change that. If we do, then the [rules proposed here](#proposed) naturally fall out. Constructor syntax will use the existing rules, and any constructor calls that would be ill-formed when applied to an aggregate will instead invoke aggregate initialization if the type is an aggregate.
 
-One downside here is that [dcl.init.aggr]/3 forbids narrowing conversions. So if we invoke aggregate initialization, then we would cause `()` constructor syntax to prevent narrowing conversions. This would probably be unexpected from users, but it would likely be acceptable.
+One downside here is that [dcl.init.aggr]/3 forbids narrowing conversions. So if we invoke aggregate initialization, then we would cause `()` constructor syntax to prevent narrowing conversions. This would probably be unexpected from users, but it would likely be acceptable. We could also make it so that constructor-style aggregate initialization would permit narrowing conversions.
 
 Another downside has to do with default member initializers:
 
@@ -160,36 +173,59 @@ To avoid parsing ambiguity issues with member functions, a brace-or-equal-initia
 		Inner i = Inner(stuff);
 	};
 
-This needlessly repeats the typename. This could be alleviated by permitting `auto` to be used for members which have a equals-style brace-or-equal-initializer.
+This needlessly repeats the typename (though it does not require a copy/move constructor). This could be alleviated by permitting `auto` to be used for members which have a equals-style brace-or-equal-initializer.
 
 ### 2: Qualified List Initialization
 
-List initialization has a lot of really useful properties, syntactically speaking. Copy-list-initialization can deduce the type to be constructed based on the context in which it is used, thus [promoting DRY principles](https://en.wikipedia.org/wiki/Don't_repeat_yourself). It is already hooked into existing syntactic mechanisms like default member initializers, so we wouldn't have to change them.
+List initialization has a lot of really useful properties, syntactically speaking. Copy-list-initialization can deduce the type to be constructed based on the context in which it is used, thus [promoting DRY principles](https://en.wikipedia.org/wiki/Don't_repeat_yourself). It is already hooked into existing syntactic mechanisms like brace-or-equal-initializers, and the type it creates can be deduced in various contexts.
 
-The main problem with list initialization is not how it is invoked; it is [how it behaves][ui problem]. So it would be quite ideal if we had a form of initialization which keys off of list initialization *syntax*, but the actual initialization behavior is in accord with our rules here. Indeed, users may even see widespread use as the default means of initializing objects.
+The main problem with list initialization is not how it is invoked on types; it is how it behaves. Ignoring the [various problems with its behavior][ui problem], for our needs here, it does not behave in a backwards-compatible fashion with constructor syntax.
+
+So it would be quite ideal if we had a form of initialization which keys off of list initialization *syntax*, but the actual initialization behavior is in accord with our rules here.
 
 A possible syntax for this would be as follows:
 
 	{c: stuff};
 
-This would be called a "constructor-qualified braced-init-list". Regular braced-init-lists are "unqualified braced-init-lists". Applying a constructor-qualified braced-init-list to an object will invoke "constructor-qualified list-initialization".
+This would be called a "c-qualified braced-init-list". Regular braced-init-lists are "unqualified braced-init-lists". Applying a c-qualified braced-init-list to a type will invoke "c-qualified list-initialization".
 
-Constructor-qualified list-initialization must behave exactly [as we proposed above](proposed). As such, it completely ignores the *entire suite* of list-initialization rules in [dcl.init.list]/3. The rules it uses to initialize `T` shall be as follows:
+Note that syntactically, these work identically to a braced-init-list, and this kind of initialization is still list-initialization. As such, `T t = {c: stuff};` is still copy-list-initialization rather than direct-list-initialization.
 
-1. `T{c: stuff}` will attempt to invoke `T(stuff)`. If there are no constructors that `T(stuff)` would call, then proceed ahead. Otherwise, invoke `T(stuff)` (and if that leads to multiple constructors, this `T{c: stuff}` shall be il-formed). If copy-list-initialization is being performed, and an `explicit` constructor is selected, the program is il-formed.
+Also, note that the `c` here is not a keyword. It is a "special identifier", under the rules for such things. As such, there should be no need to reserve it as a keyword, and it should not interfere in parsing existing braced-init-lists.
 
-	For all intents and purposes, this invokes [over.match.list] to find a constructor, except 1.1 is skipped.
+C-qualified list-initialization must behave exactly [as we proposed above](#proposed). As such, its rules are *completely separate* from the list-initialization rules in [dcl.init.list]/3. Those rules become the rules for unqualified list-initialization.
+
+The rules for c-qualified list-initialization for a type `T` shall be as follows:
+
+1. If `T` is a character array and the initializer list has a single element that is an appropriately-typed string literal (8.6.2), initialization is performed as described in that section.
+
+2. If `T` is a class type, constructors are considered. The applicable constructors are enumerated and the best one is chosen through overload resolution ([over.match], [over.match.list]). Paragraph [over.match.list]/1.1 is ignored. If more than one constructor is considered equally viable, the program is ill-formed. If no matching constructor is found, proceed.
+
+3. If the initializer list has a single element of type `E` and either `T` is not a reference type or its referenced type is reference-related to `E`, the object or reference is initialized from that element (by copy-initialization for copy-list-initialization, or by direct-initialization for direct-list-initialization).
+
+4. If `T` is a reference type, a prvalue of the type referenced by `T` is generated. The prvalue initializes its result object by c-qualified copy-list-initialization or c-qualified direct-list-initialization, depending on the kind of initialization for the reference. The prvalue is then used to direct-initialize the reference.
+
+5. If `T` is an aggregate, aggregate initialization is performed ([dcl.init.aggr]).
+
+6. If the list contains no elements, the object is value-initialized.
+
+7. Otherwise the program is ill-formed.
+
+The order of rules place aggregate initialization last (well, before value-initialization). 
+
+Note that this means that narrowing conversions on the elements of a c-qualified braced-init-list are perfectly fine when invoking a constructor (though they will still affect aggregate initialization, in accord with [dcl.init.aggr]/3). Without permitting narrowing conversions on constructor calls, this would not be a backwards compatible fix to LWG #2089.
+
+The different narrowing behavior between constructor initialization and aggregate initialization with c-qualified initialization could be avoided by permitting aggregate initialization from a c-qualified list to not prohibit narrowing.
+
+The principle downside of this fix is that there is a very large difference in initialization behavior between `{stuff}` and `{c: stuff}`. While that is the main point, it does create a few elements of unexpected incongruity. Unqualified list-initialization forbids narrowing in all cases, while c-qualified initialization only forbids it for aggregate initialization (if even then). Furthermore, `{c: stuff}` will never create an `initializer_list`, even directly:
+
+	initializer_list<int> il{c: 1, 2, 3, 4};
 	
-2. If `T` is an aggregate type, then it will initialize `T` via [dcl.init.aggr]. This may not be equivalent to `T{stuff}`, since that might invoke parts of [dcl.init.list]/3 that don't provoke aggregate initialization. If `T` cannot be aggregate initialized with `stuff`, then `T{c: stuff}` is il-formed.
-3. Otherwise (ie: no matching constructor and `T` is not an aggregate) the code is il-formed.
-
-Note that this means that narrowing conversions on the elements of a constructor-qualified braced-init-list are perfectly fine when invoking a constructor (though they will still affect aggregate initialization, in accord with [dcl.init.aggr]/3). Without this caveat, this would not be a backwards compatible fix to LWG #2089.
-
-The principle downside of this fix is that there is a very large behavioral difference between the behavior of `{stuff}` and `{c: stuff}`.
+`initializer_list` has no constructor that take 4 integer parameters. And none of the other cases apply. So it cannot be constructed in this way.
 
 **Designated Initializers**
 
-Constructor-qualified braced-init-lists should not be able to use designated initializers. This makes sense, as the purpose of this initialization syntax is not to solely initialize aggregates. If you want designated initializers, then you know you're dealing with an aggregate, so you don't need `c:` syntax at all.
+C-qualified braced-init-lists should not be able to use designated initializers. This makes sense, as the purpose of this initialization syntax is not to solely initialize aggregates. If you want designated initializers, then you know you're dealing with an aggregate, so you don't need `c:` syntax at all.
 
 # Companion: The initializer_list Problem
 
@@ -205,11 +241,11 @@ Both of these are equally short and clean pieces of code that make it clear exac
 	va.emplace_back(1, 2, 3, 4); //Uses aggregate initialization.
 	vv.emplace_back(1, 2, 3, 4); //Compile error
 
-Our [suggested resolution to LWG 2089](proposed) explicitly disallowed the second one, on the grounds that `vv.emplace_back(1, 2)` would have radically different behavior from `vv.emplace_back(1, 2, 3)`. As such, the natural solution is to have the user explicitly provide an `initializer_list`:
+Our [suggested resolution to LWG 2089](#proposed) explicitly disallowed the second one, on the grounds that `vv.emplace_back(1, 2)` would have radically different behavior from `vv.emplace_back(1, 2, 3)`. As such, the natural solution is to have the user explicitly provide an `initializer_list`:
 
-	vv.emplace_back({1, 2, 3, 4}); //Compile error
+	vv.emplace_back({1, 2, 3, 4});
 
-This does not work, since a bare braced-init-list cannot be deduced as a type when provided as a function argument to a template function.
+This does not work, since a bare braced-init-list cannot undergo template argument deduction in this way. As well as other similar restrictions.
 
 It should be noted that the `in_place_t` functions added to `any`, `optional`, and `variant` actually have a solution to this problem. They have a second overload explicitly for `initializer_list<T>`, so long as the target type in question can be constructed from one (and the other provided arguments).
 
@@ -219,7 +255,7 @@ The problem is that making it explicit is *really* long-winded:
 
 	vv.emplace_back(std::initializer_list<int>{1, 2, 3, 4}); //Valid code.
 
-This actually cannot be done with a language feature. Consider this potential function:
+One might consider adding a standard library function that takes an `initializer_list<T>` as a parameter and just returns it:
 
 	template<typename T>
 	std::initializer_list<T> il(std::initializer_list<T> val)
@@ -227,30 +263,32 @@ This actually cannot be done with a language feature. Consider this potential fu
 		return val;
 	}
 
-While this would allow is to (theoretically) do `vv.emplace_back(std::il({1, 2, 3, 4}))`, it plays havok with the lifetime rules for `initializer_list`s.
+While this would (theoretically) allow us to do `vv.emplace_back(std::il({1, 2, 3, 4}))`, it plays havok with the lifetime rules for `initializer_list`s.
 
-When a braced-init-list is transformed into an `initializer_list`, a static array is created along with it. The linked of this temporary is linked to the lifetime of the object that was initialized with the `braced-init-list`. Which, in the case of a call to `il` will be the parameter to that function.
+When a braced-init-list is transformed into an `initializer_list`, a temporary array is created along with it. The lifetime of this temporary is linked to the lifetime of the object that was initialized with the braced-init-list. Which, in the case of a call to `il` will be the parameter to that function.
 
 Thus, the array may be destroyed at the end of this function call. Or the end of the expression that called `il`. As such, if we want to make this feature safely, we need to do it in a way that works. And that requires a language feature.
 
 ## List Converter
 
-There are two cases that we want to cover: one where the compiler deduces the type of `initializer_list`, and one where the user provides an explicit type to use. Case 1 is equivalent to `auto x = {more-than-one-value};` rules. Case 2 is when you want the compiler to use a specific `T` as well, in accord with `intializer_list<T> x = {values};` rules.
+There are two cases that we want to cover: one where the compiler deduces the `T` in `initializer_list<T>`, and one where the user provides an explicit type to use. Case 1 is equivalent to `auto x = {more-than-one-value};` rules. Case 2 is when you want the compiler to use a specific `T` as well, in accord with `intializer_list<T> x = {values};` rules.
 
 A possible syntax for this would be as follows:
 
 	{l: stuff} //Converts to an `initializer_list`, but deduces `T` from the values.
 	{l Typename: stuff} //Converts to `initializer_list<Typename>`.
 	
-This would be called a "list-qualified braced-init-list", which shall provoke "list-qualified list-initialization". The first syntax will behave in accord with our existing `auto x = {more-than-one-value};` syntax, though `stuff` is permitted to have exactly one value. The second syntax will behave in accord with `intializer_list<Typename> x = {values};`.
+This would be called an "l-qualified braced-init-list", which shall invoke "l-qualified list-initialization". The second syntax a "type-qualified list" in addition to be an "l-qualified" list. The first syntax will behave in accord with our existing `auto x = {more-than-one-value};` syntax, though `stuff` is permitted to have exactly one value. The second syntax will behave in accord with `intializer_list<Typename> x = {values};`.
+
+As with `c` above, `l` is a special identifier, not a keyword.
 
 Note that narrowing conversions will be forbidden, just as with the behavior of the equivalent syntaxes. Also, just as with `c:` syntax, designated initializers are forbidden.
 
 ## List to Aggregate?
 
-The above focuses on the use of list-qualified lists for building `initializer_list`s, usually via deduction. But what about initializing other things?
+The above focuses on the use of l-qualified lists for building `initializer_list`s, usually via deduction. But what about initializing other things?
 
-Should list-qualified list initialization be able to invoke aggregate initialization, or even call `initializer_list` constructors of objects? It sounds like a very useful idea. Conceptually, these all seem to mean the same thing:
+Should l-qualified list initialization be able to invoke aggregate initialization, or even call `initializer_list` constructors of objects? It sounds like a very useful idea. Conceptually, these all seem to mean the same thing:
 
 	auto il = {l: 1, 2, 3}; //initializer_list<int>
 	int arr[] = {l: 1, 2, 3};
@@ -262,11 +300,11 @@ Should list-qualified list initialization be able to invoke aggregate initializa
 
 This code seems to express the intent of the user very effectively, without ambiguity.
 
-There are a couple of problems with this. First, such lists can be applied to aggregates that are not arrays. `IVec3` above is an aggregate of 3 variables, but is conceptually array-like in its meaning. It is a 3D vector of integers, not unlike an `array<int, 3>`. So conceptually, it makes sense to be able to use list-qualified list-initialization on it.
+There are a couple of problems with this. First, such lists can be applied to aggregates that are not arrays. `IVec3` above is an aggregate of 3 variables, but is conceptually array-like in its meaning. It is a 3D vector of integers, not unlike an `array<int, 3>`. So conceptually, it makes sense to be able to use l-qualified list-initialization on it.
 
 So how do we differentiate between aggregates that are conceptually array-like and those that are not? Would we allow any arbitrary values within the braces?
 
-It would make sense to require that list-qualified lists are il-formed if the values given cannot deduce to some kind of `initializer_list<T>`. Aggregate initialization won't use them, but the deduction test ensures that you could only use list-qualified aggregate initialization with a list of homogenous values.
+It would make sense to declare that l-qualified lists are ill-formed if the values given cannot deduce to some kind of `initializer_list<T>`. Aggregate initialization won't use the result of that deduction, but the deduction test ensures that you could only use l-qualified aggregate initialization with a list of homogeneous values.
 
 The other problem deals with providing an explicit type when initializing an aggregate:
 
@@ -274,14 +312,66 @@ The other problem deals with providing an explicit type when initializing an agg
 
 Exactly how should this behave? It doesn't trigger the previous rule, since the values do not require a narrowing conversion to fit into a `float`. But `Agg` is a sequence of `int` types. Does it make sense to permit what the user has explicitly claimed is a sequence of `float` to initialize a sequence of `int`?
 
-The rules for list-qualified list-initialization overall would be as follows. Just as with constructor-qualified initialization, we ignore all of [dcl.init.list]/3 (except for any clause explicitly invoked):
+Similarly, should this work:
 
-1. If the list-qualified list is type qualified, attempt to initialize an `initializer_list<Q>` with the values, where `Q` is the given type. If that fails, then the code is il-formed.
-2. If the list-qualified list is not type qualified, use [temp.deduct.call] rules to deduce an `initializer_list` type `Q`. The list shall behave in later steps as though it were type qualified with `Q`.
+	std::vector<float> vf = {l int: 1, 2, 3};
+	
+`vector<float>` only has an `initializer_list` constructor for `float`. So, should this invoke it, even though it is qualified to use `int`?
+
+The rules for l-qualified list-initialization overall would be as follows. Just as with c-qualified initialization, we ignore all of [dcl.init.list]/3 (except for any clause explicitly invoked):
+
+1. If the list is type-qualified, attempt to initialize an `initializer_list<Q>` with the values, where `Q` is the given type. If that fails, then the program is ill-formed.
+2. If the list is not type-qualified, use [temp.deduct.call] rules to deduce an `initializer_list` type `Q`. The list shall behave in later steps as though it were type qualified with `Q`.
 3. If `T` is an aggregate, perform aggregate initialization with the members of the list.
-4. If `T` is a user-defined type, attempt to call initializer list constructors, in accord with [over.match.list], except that paragraph 1.2 is ignored. Also, ignore the bit about empty lists using the default constructor.
+4. If `T` is an `initializer_list<D>`, then initialize it with the values in the list, in accord with the usual `initializer_list` creation rules.
+4. If `T` is a class type, attempt to call constructors, in accord with [over.match.list], except that paragraph 1.2 is ignored. Also, ignore the bit about empty lists using the default constructor.
 5. If `T` is a placeholder (whether a variable or a return value), deduce `T` as `initializer_list<Q>`, where `Q` is the qualified type.
 6. If `T` is a template argument undergoing template argument deduction, deduce `T` as `initializer_list<Q>`, where `Q` is the qualified type.
+
+This will permit all of the above cases to work, even the ones which seem odd.
+
+# Aggregate Uniformity
+
+In a previous section, [this example](#disuniform) was given to represent a distinction between initializing an aggregate and initializing a non-aggregate with an `initializer_list` constructor. Adjusted for our new syntax, this is the result:
+
+	vector<array<int, 2>> va;
+	vector<vector<int>> vv;
+	va.emplace_back(1, 2); //Initializes the aggregate.
+	vv.emplace_back({l: 1, 2}); //Calls an initializer_list constructor.
+
+This functions well enough. However, it would be nice if there was a way to have a single syntax that could initialize both. We know that making `vv.emplace_back(1, 2)` call the `initializer_list` constructor is a complete non-starter, as it breaks backwards compatibility (the example uses 2 elements to demonstrate this). Therefore, we could entertain the second possibility: somehow make `va.emplace_back({l: 1, 2})` invoke aggregate initialization.
+
+We could make it possible to initialize an aggregate with an `initializer_list`. Not merely with a braced-init-list, but with a runtime instance of an `initializer_list` value.
+
+Given any particular aggregate, a compiler could generate the code to runtime initialize an aggregate from an `initializer_list<T>`. It would effectively give an aggregate an `initializer_list<T>` constructor, but one that will only be called when using constructor syntax. So `Agg({...})` could call it (and therefore `Agg{c:{...}}` will too), but `Agg{...}` will use unqualified list-initialization rules.
+
+There are a number of cases to consider:
+
+1. The `initializer_list` has fewer values than the aggregate. This should do what compile-time aggregate initialization would do: initialize what it can with the given values, then value initialize the rest (or use default member initializers).
+
+2. The `initializer_list` has more values than the aggregate. When using a braced-init-list, this is ill-formed. Therefore, we should probably throw an exception of some form.
+
+3. Each member of the aggregate must be able to be initialized by `T`. And such initialization should not require a narrowing conversion. Note that this applies even to aggregate members that are not being initialized by that particular `initializer_list`.
+
+Static reflection would be difficult to use to perform this operation, since the size of an `initializer_list` is a runtime quantity.
+
+Indeed, that is the biggest problem with this idea: code generation for aggregate initialization from `initializer_list`. Despite `initializer_list::size` being `constexpr`, once you pass an `initializer_list` it as a parameter, you lose the ability to handle it at compile-time. This is why step 2 above requires a runtime exception. Even ignoring exceptions, performing step 1 requires a lot of conditional initialization based on a runtime property.
+
+We do have one advantage: `{l: stuff}` is a new piece of syntax. As such, we are free to give it new rules.
+
+So we could have `{l: stuff}` lead to the generation of `std::sized_init_list<T, N>`. This should be a class publicly derived from `initializer_list<T>`. As such, it should be able to be used in such interfaces (calling `initializer_list` constructors). However, functions that takes variadic parameters like `emplace` will deduce a `sized_init_list<T, N>`.
+
+Note that this would affect *all uses* of the syntax: `auto x = {l: stuff}` will deduce a `sized_init_list<T, N>` and so forth.
+
+With such an object in hand, we can *statically* perform aggregate initialization from the type. The compiler can statically generate code for each particular N, and thus not have to generate code that does runtime checks. Throwing exceptions in step 2 would be completely unnecessary; if `N` is larger than the number of elements in the aggregate, you get a compile error.
+
+And therefore, the distinction between these will mostly disappear:
+
+	Agg agg{l: stuff};
+	vector<Agg> va;
+	va.emplace_back({l: stuff});
+
+The only difference that `emplace_back` will provoke a copy from values in the `sized_init_list`, while `agg` will not. But that's a distinction which cannot be avoided, since we're using parameters of a function to remotely initialize an object.
 
 # Acknowledgments
 
