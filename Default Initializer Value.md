@@ -67,14 +67,14 @@ We first declare a type in the standard library: `std::default_init_t`. This is 
 
 `std::default_init_t` will be:
 
-1. Not default constructible
-2. Trivially copyable
+1. Trivial type
+2. `==` and `!=` with itself. All instances are considered equal to each other.
 
 `std::default_init` shall be a `const`-qualified value of type `std::default_init_t`. Aside from copying or moving, it is the only way to get a value of `std::default_init_t` type. This is much like `std::in_place_t`'s relationship to `std::in_place`.
 
 A value of type `std::default_init_t` works like a normal C++ object, except in ways that will be discussed below.
 
-The list in [dcl.init]/17 shall be changed to add a new entry, probably after 17.2. If the initializer is a single value of type `std::default_init_t`, then the destination object will be default initialized (in accord with [dcl.init]/7). Also, if the type being created is a reference, then a default-initialized prvalue of the referenced type will be initialized and assigned to the reference.
+The list in [dcl.init]/17 shall be changed to add a new entry, probably after 17.2. If the initializer is a single value of type `std::default_init_t`, then the destination object will be default initialized (in accord with [dcl.init]/7). Also, if the type being initialized is a reference, then a default-initialized prvalue of the referenced type will be initialized and assigned to the reference.
 
 As such, all of the following will perform default initialization:
 
