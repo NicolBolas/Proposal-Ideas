@@ -28,9 +28,9 @@ std::vector<int> aVec(256);
 genData(aVec.data(), aVec.size());
 `````
 
-This is different. It performs value initialization on each element of the `vector`. Sometimes, this is exactly what you want. At other times, it very much is not. In this case, we value-initialize those elements, only to turn around and immediately overwrite this data.
+This is different. It performs value initialization on each element of the `vector`. Sometimes, this is exactly what you want, but not in this case. Here, we are value-initializing those elements, only to immediately overwrite them.
 
-For our use case, this is decidedly non-optimal.
+For our use case, this is decidedly non-optimal. And the more array elements there are, the less optimal it gets.
 
 One could argue that we could achieve the same effect by proper use of iterators:
 
@@ -47,11 +47,13 @@ This has two problems. First, it relies on `genData`'s ability to work with iter
 
 It is good that `vector` and other containers do not default to default initialization of its contents. But it is not good that there is no way to permit default container initialization at all, even when that is precisely what the user wants.
 
+C APIs are hardly the only APIs that fill in object values in-situ. `operator>>` with iostreams are expected to be provided with live objects. Reading a number of integers from a stream and storing them in an array is a reasonable operation. With a `std::array` or an `int[]`, the array will be uninitialized. But if you use a `vector`, the values will have to be at least value-initialized. This wastes performance.
+
 ## Indirect Default Initialization
 
 The various `emplace` functions, along with their `in_place_t`-based variations, represent an effective way to defer initialization of an object. They effectively avoid "initialize-and-copy" methodology that sometimes happens in C++.
 
-However, even if you pass no parameters, they will value-initialize the data. Again, it is good that this is the default. But there are times when what you really want is to default initialize the data, with the expectation that other code can fill in the details.
+However, even if you pass no parameters, they will value-initialize the data. Again, it is good that this is the default. But there are times when what you really want is to default initialize the data, with the expectation that other code will give it useful values.
 
 ## Uninitialized Values From Non-Default Initialization
 
@@ -63,7 +65,7 @@ It would be useful to have constructors that can construct the object without in
 
 # Design
 
-We first declare a type in the standard library: `std::default_init_t`. This is a special type which the language looks for in certain circumstances. This is similar to how `std::nullptr_t`'s behavior in the standard. For example, it can be converted to an integer type or a pointer type, but `nullptr_t` does not have `operator int` or `operator T*` overloads. The conversion happens because the language says so, and it is not considered an overloaded conversion operator.
+We first declare a new type in the standard library: `std::default_init_t`. This is a special type which the language looks for in certain circumstances. This is similar to how `std::nullptr_t`'s behavior in the standard. For example, it can be converted to an integer type or a pointer type, but `nullptr_t` does not have `operator int` or `operator T*` overloads. The conversion happens because the language says so, and it is not considered an overloaded conversion operator.
 
 `std::default_init_t` will be:
 
