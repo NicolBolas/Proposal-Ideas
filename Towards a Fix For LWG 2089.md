@@ -129,6 +129,10 @@ It is vital to understand that, by implementing *any* fix for LWG 2089, we will 
 
 By applying this new initialization form to all indirect initialization APIs, users will need to be aware of its behavior and quirks. As Ville Voutilainen outlined in [N4462][ville], it is very important for users to be able to not merely understand this form of initialization, but to write it into their own APIs. When a user goes to implement their own indirect initialization APIs, we want them to have the same behavior.
 
+As such, visibility is an important aspect of a good resolution to LWG 2089. It is very easy to write an indirect initialization function. As such, user code is likely to create these in a variety of places. If users are unaware of the LWG 2089 fix, or are ignorant of even the need for it, then users are very likely to simply use constructor or list-initialization syntax, rather than the LWG 2089 fix. However, if they use the LWG 2089 fix throughout their code, even for non-indirect initialization cases, then they will simply naturally default to it.
+
+
+
 # LWG 2089 Through the Library { #lib2089 }
 
 C++17's features, particularly `if constexpr` makes the code for implementing this initialization form much easier to write. The code for the [resolution suggested here](#proposed) would look something like this:
@@ -149,7 +153,7 @@ Obviously, this requires the addition of an `is_aggreate` trait.
 
 The standard library could simply provide this function as a common indirect initialization utility tool. LWG 2089 would be resolved by having `std::initialize<T>` be used by:
 
-* `allocator_traits<Alloc>::construct`, via `new(static_cast<void*>(p)) auto(std::initialize<T>(std::forward<Args>(args)...))`, made possible thanks to generalized elision.
+* `allocator_traits<Alloc>::construct`, via `new(static_cast<void*>(p)) auto(std::initialize<T>(std::forward<Args>(args)...))`, made possible thanks to guaranteed elision.
 * The now-deprecated `allocator::construct`, through similar syntax.
 * `make_shared` and `make_unique`
 * The `in_place_t` constructors for `any`, `variant` and `optional`.
@@ -159,15 +163,19 @@ The standard library could simply provide this function as a common indirect ini
 
 The principle advantage of this library-only feature is that it is self-contained. We would be introducing a new initialization form, but it would be one that lives.
 
-The downsides of such a solution, relative to any language feature, are:
+The downsides of such a solution, relative to any language feature, are as follows.
 
-1. Visibility. A language feature could represent a form of initialization that users could commonly use. Whereas `std::initialize` would be something tucked away in the utility portion of the standard library, where it would primarily be known about by experts rather than the common C++ coder. 
+Visibility. A language feature could represent a form of initialization that users could commonly use. Whereas `std::initialize` would be something tucked away in the utility portion of the standard library, where it would primarily be known about by experts rather than the common C++ coder. 
 
-2. Consistency. Because of the lack of visibility of the feature, when users want to create their own indirect initialization APIs, they will likely use constructor or list-initialization syntax rather than `std::initialize`. As such, they are not likely to get the same behavior as the standard library APIs. If they have never seen `std::initialize` before, they will likely attempt to roll their own equivalent.
+Consistency. Because of the lack of visibility of the feature, when users want to create their own indirect initialization APIs, they will likely use constructor or list-initialization syntax rather than `std::initialize`. As such, they are not likely to get the same behavior as the standard library APIs. If they have never seen `std::initialize` before, they will likely attempt to roll their own equivalent.
 
-3. Narrowing. When performing list initialization directly, you can provide an integer or floating-point literal, even to parameters that are smaller than the type that the literal would otherwise deduce to. So if you pass a literal "1" to a `char`, that is fine, because the compiler can detect the constant expression and see that "1" is in the range of `char`.
+Narrowing. When performing list initialization directly, you can provide an integer or floating-point literal, even to parameters that are smaller than the type that the literal would otherwise deduce to. So if you pass a literal "1" to a `char`, that is fine, because the compiler can detect the constant expression and see that "1" is in the range of `char`.
 
-	However, once you are dealing with indirect initialization, that becomes a problem. The literal is long-gone; it is replaced by an `int`. And `int`-to-`char` conversion is narrowing. Since the LWG 2089 syntax is based on list-initialization, which forbids narrowing conversions, what would have been valid code becomes a compile error.
+However, once you are dealing with indirect initialization, that becomes a problem. The literal is long-gone; it is replaced by an `int`. And `int`-to-`char` conversion is narrowing. Since the LWG 2089 syntax is based on list-initialization, which forbids narrowing conversions, what would have been valid code becomes a compile error.
+
+This feature also poorly interacts with other features that make initialization easier. The most obvious of which is template argument deduction for constructors. A user can write `vector(...)` easily enough; they can even use list-initialization if they so desire. But they cannot use `initialize<vector>(...)` so easily; they have to explicitly name the class.
+
+This downside does not apply to using `initialize` in cases of indirect initialization. But it does make it more difficult to use `initialize` in other places.
 
 # Initialization Control Through Parameters { #control_library }
 
@@ -207,7 +215,7 @@ We could even apply LWG 2089's solution to the first overload of `initialize`, i
 
 ## Pros and Cons { #control_library_pro_cons }
 
-There are two advantages. The first is that this syntax visibly captures the users intent, allowing users to directly spell out *exactly* what they want at the time they call the indirect function. This is preferable to relying on esoteric initialization forms.
+There are two advantages. The first is that this syntax visibly captures the users intent, allowing users to directly spell out *exactly* what they want at the time they call the indirect function. This is generally preferable to relying on esoteric initialization rules.
 
 The second advantage is that it fixes all of those [supposedly unfixable](#unfixable) problems. Or more to the point, it gives users the ability to resolve those conflicts themselves.
 
@@ -247,7 +255,13 @@ What it ought to do is copy from the value into a new variable. However, the fir
 
 But for what type? What type do we deduce `x` to be? If the first parameter is ignored, then clearly it shouldn't be part of that deduction.
 
-These are hardly unfixable problems. But they require a very great deal of thought and care in an already complex part of the standard.
+These are hardly insurmountable problems. But they require careful thought and added complexity in an already complex part of the standard.
+
+Another disadvantage is that it is explicit about which form of initialization to use. While that is usually a good thing, the downside is that it is impossible to treat constructor and aggregate initialization the same way. The code passing the indirect parameters *must* be aware whether the type should use constructor or list initialization.
+
+This poses a problem with template code. Or, more to the point, it does not allow a particular degree of interface freedom. If template code were restricted by a concept to use `std::initialize<T>` for a particular set of parameters, the user would be free to pass aggregates or objects that fit that particular interface. By forcing the code to statically select `construct_init` or `list_init`, things become much more complex.
+
+This problem could be solved by having a third form: `construct_list_init`, which works like our proposed LWG 2089 fix. The template code could then rely on that particular set of functionality.
 
 A more minor problem is the added verbosity. While it would be great to be able to list-initialization syntax while still guaranteeing that non-`initializer_list` constructors will not be called, requiring a bulky identifier like `std::construct_init` is a good way to ensure that this will only be employed when absolutely necessary, rather than as a useful default.
 
