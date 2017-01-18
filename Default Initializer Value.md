@@ -179,10 +179,14 @@ The language itself takes care of `allocator` and `allocator_traits` issues. Cal
 
 Containers (including `basic_string`) should be changed to have specific overloads for `default_init_t`-based initialization. Specifically, the following should have an overload that takes `default_init_t`:
 
-* Single-element `insert` functions for sequence containers. Associative/unordered container inserts always insert a specific value.
-* All sized constructors, `resize`, and sized `insert` functions.
+* Single-element `insert` functions for sequence containers & `basic_string`. Default initialization doesn't make as much sense for associative and unordered containers.
+* All sized-with-`T` functions, including:
+	* Constructors
+	* `insert`
+	* `assign`
+	* `resize`
 
-Note that we do not need overloads for `push_x` functions, as they all have `emplace_x` alternatives that work quite well with `std::default_init`.
+Note that we do not need overloads for `push_x` functions, as they all have `emplace_x` alternatives that work just fine with `std::default_init`. The push_x functions all copy or move a value; what the user wants when they use `std::default_init` is to have the container default initialize the value, not copy/move a default initialized value.
 
 # Impact on the Standard
 
