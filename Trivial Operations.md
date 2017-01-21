@@ -40,7 +40,7 @@ The use of `ptr` represents undefined behavior. This kind of casting is frequent
 
 Note that `new(mem) Type` is not guaranteed to *preserve* the contents of `mem`. Debug builds often write arbitrary values, even during placement new operations, and this behavior is permitted by the standard.
 
-What we need is a function which will begin the lifetime of `Type`, but preserve the contents of the memory it is being built within. This operation is only legitimate for types that are trivially default constructible, since such types have no concept of invalid values (since they can be legally constructed with uninitialized data).
+What we need is a function which will begin the lifetime of `Type`, but preserve the contents of the memory it is being built within.
 
 ## Trivial Copy Construct
 
@@ -95,11 +95,16 @@ The standard library will include the following functions. They should be part o
 
 ## Trivial Construction In-Place
 
-These functions construct an object in place via trivial default construction. But they do so in such a way that the object's initial value representation shall be the data currently residing in that memory. These functions require `T` to be trivially default constructible.
+These functions construct an object in place, but they do so in such a way that the object's initial value representation shall be the data currently residing in that memory. These functions require `T` to be either:
+
+1. Trivially default constructible.
+2. Trivially copyable and CopyConstructible.
+
+`T` will be initialized as if by a trivial constructor call.
 
 Note that while these functions could in theory be used to achieve type-punning (conversion of `int` to `float` by bits), such an operation would still be UB. The value representation of an `int` is different from that of a `float`. And the function can only work if the value representation stored in the memory matches that required for the `Type`.
 
-It could however permit you to perform punning if source and destination types are layout compatible (so long as the destination is trivially default constructible too). Strict aliasing is preserved due to the ending of the lifetime of the prior objects in that storage.
+It could however permit you to perform punning if source and destination types are layout compatible (so long as the destination is trivially default constructible too). Strict aliasing rules are preserved, as this reuses the storage and therefore ends the lifetime of the prior objects in that storage.
 
 ````
 template<typename T>
@@ -108,9 +113,9 @@ T *trivial_construct_in_place(void *ptr);
 
 Requires: `ptr` points to storage that contains `sizeof(T)` bytes of storage. `ptr` must be aligned to at least `alignof(T)`. `ptr` shall store the value representation of an object of type `T`.
 
-Returns: A pointer to a `T` object which reuses the storage referenced by `ptr`. The object representation of `T` shall be exactly the same values that were stored in `ptr`, up to `sizeof(T)` bytes.
+Returns: A pointer to a `T` object which reuses the storage referenced by `ptr`. The object representation of `T` shall be exactly the same values that were stored in `ptr`, up to `sizeof(T)` bytes. `T` will be initialized as if by a trivial constructor call.
 
-Remarks: This function does not participate in overload resolution unless `T` is trivially default constructible. The storage starting at `ptr` and ending `sizeof(T)` bytes after this address are reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life] .]
+Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called. The storage starting at `ptr` and ending `sizeof(T)` bytes after this address are reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life] .]
 
 ````
 template<typename T>
@@ -133,15 +138,16 @@ for(size_t i = 0; i < count; ++i)
 return ret;
 ````
 
-Remarks: This function does not participate in overload resolution unless `T` is trivially default constructible.
+Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called.
 
 ## Trivial Copy Construct
 
 This function constructs a prvalue via trivial copy construction, from a region of storage containing `T`'s value representation. `T` is required to be trivially copyable and CopyConstructible.
 
+
 ````
 template<typename T>
-T trivial_copy_construct(void *ptr);
+T trivial_construct(void *ptr);
 ````
 
 Requires: `ptr` points to storage that contains at least `sizeof(T)` bytes of memory. `ptr` shall store the value representation of an object of type `T`.
@@ -149,6 +155,14 @@ Requires: `ptr` points to storage that contains at least `sizeof(T)` bytes of me
 Returns: A prvalue of type `T` whose value representation is equivalent to the storage currently in `ptr`.
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is CopyConstructible.
+
+Note that the implementation of this function must take into account the following possibility:
+
+````
+new(ptr) auto(trivial_copy_construct<T>(ptr));
+````
+
+That would effectively be the equivalent of `trivial_construct_in_place`.
 
 ## Trivial Copy Assignment
 
