@@ -131,9 +131,21 @@ By applying this new initialization form to all indirect initialization APIs, us
 
 As such, visibility is an important aspect of a good resolution to LWG 2089. It is very easy to write an indirect initialization function. As such, user code is likely to create these in a variety of places. If users are unaware of the LWG 2089 fix, or are ignorant of even the need for it, then users are very likely to simply use constructor or list-initialization syntax, rather than the LWG 2089 fix. However, if they use the LWG 2089 fix throughout their code, even for non-indirect initialization cases, then they will simply naturally default to it.
 
+## Library vs. Language { #lang_library }
 
+This paper categorizes solutions into two groups: [library changes](#library) and [language changes](#language). These two groups have some benefits and downsides in common.
 
-# LWG 2089 Through the Library { #lib2089 }
+The prime benefit of library changes are that they are not language changes, and thus not *formally* ushering in a new kind of initialization. C++ is replete with initialization forms, so not adding another to the language can be seen as a benefit.
+
+Library-based solutions generally have lower user visibility, particularly to less experienced C++ developers. There are so many utility functions, algorithms, and classes that lots of C++ programmers simply do not know all that their standard library offers them. Whereas the number of language features added to a new version are much smaller.
+
+Library solutions to this problem in particular will have lower visibility than usual, since it will primarily be used inside the function performing object initialization. They are just one more utility function in a library with many such functions. Users are unlikely to wholesale switch to using `std::initialize<T>(...)` over directly invoking `T(...)` or `T{...}`, even within template code. It's just too cumbersome for day-to-day use.
+
+The lack of visibility of these solutions makes it unlikely that novice C++ users will know to use `std::initialize` in their own indirect initialization functions. This will create a dichotomy between the behavior users get from the standard library and what they get from user-written libraries. If users have never seen `std::initialize` before, they will likely attempt to roll their own equivalent, with mixed results.
+
+# Library-Based Solutions { #library }
+
+## LWG 2089 Through the Library { #library_2089 }
 
 C++17's features, particularly `if constexpr` makes the code for implementing this initialization form much easier to write. The code for the [resolution suggested here](#proposed) would look something like this:
 
@@ -159,25 +171,19 @@ The standard library could simply provide this function as a common indirect ini
 * The `in_place_t` constructors for `any`, `variant` and `optional`.
 * Any other APIs that use indirect construction syntax.
 
-## Pros and Cons { #lib2089_pro_con }
+### Pros and Cons { #library_2089_pro_con }
 
 The principle advantage of this library-only feature is that it is self-contained. We would be introducing a new initialization form, but it would be one that lives.
 
-The downsides of such a solution, relative to any language feature, are as follows.
-
-Visibility. A language feature could represent a form of initialization that users could commonly use. Whereas `std::initialize` would be something tucked away in the utility portion of the standard library, where it would primarily be known about by experts rather than the common C++ coder. 
-
-Consistency. Because of the lack of visibility of the feature, when users want to create their own indirect initialization APIs, they will likely use constructor or list-initialization syntax rather than `std::initialize`. As such, they are not likely to get the same behavior as the standard library APIs. If they have never seen `std::initialize` before, they will likely attempt to roll their own equivalent.
-
-Narrowing. When performing list initialization directly, you can provide an integer or floating-point literal, even to parameters that are smaller than the type that the literal would otherwise deduce to. So if you pass a literal "1" to a `char`, that is fine, because the compiler can detect the constant expression and see that "1" is in the range of `char`.
+One downside of this solution is narrowing. When performing list initialization directly, you can provide an integer or floating-point literal, even to parameters that are smaller than the type that the literal would otherwise deduce to. So if you pass a literal "1" to a `char`, that is fine, because the compiler can detect the constant expression and see that "1" is in the range of char.
 
 However, once you are dealing with indirect initialization, that becomes a problem. The literal is long-gone; it is replaced by an `int`. And `int`-to-`char` conversion is narrowing. Since the LWG 2089 syntax is based on list-initialization, which forbids narrowing conversions, what would have been valid code becomes a compile error.
 
 This feature also poorly interacts with other features that make initialization easier. The most obvious of which is template argument deduction for constructors. A user can write `vector(...)` easily enough; they can even use list-initialization if they so desire. But they cannot use `initialize<vector>(...)` so easily; they have to explicitly name the class.
 
-This downside does not apply to using `initialize` in cases of indirect initialization. But it does make it more difficult to use `initialize` in other places.
+In cases of indirect initialization, there is pretty much no way to avoid it. And in many cases, the typename is implicit, so there is no need. In cases like `in_place_type_t<T>`, there is little that can be done to avoid having to spell out the full typename.
 
-# Initialization Control Through Parameters { #control_library }
+## Initialization Control Through Parameters { #library_control }
 
 Recall that the problem we have is that C++ has many forms of initialization, but we as the indirect initializer can only provide a sequence of parameters to whatever initialization form the code chooses to use.
 
@@ -213,19 +219,63 @@ If a user wants to use constructor initialization, they would pass `std::constru
 
 We could even apply LWG 2089's solution to the first overload of `initialize`, in addition to the qualified forms. That would permit users to use shorter syntax in many cases where the user's desires are obvious, but with the ability to qualify the initialization where needed.
 
-## Pros and Cons { #control_library_pro_cons }
+### Pros and Cons { #library_control_pro_cons }
 
-There are two advantages. The first is that this syntax visibly captures the users intent, allowing users to directly spell out *exactly* what they want at the time they call the indirect function. This is generally preferable to relying on esoteric initialization rules.
+There are two advantages. The first is that this syntax visibly captures the user's intent, allowing users to directly spell out exactly what they want at the time they call the indirect function. This is generally preferable to relying on esoteric initialization rules.
 
 The second advantage is that it fixes all of those [supposedly unfixable](#unfixable) problems. Or more to the point, it gives users the ability to resolve those conflicts themselves.
 
-Since it is a library-only solution, it has all of the [disadvantages of the prior solution](#lib2089_pro_con). Though in this case, if you fail to use `std::initialize` in your indirect initialization functions, you'll have problems almost immediately when someone uses one of the control parameters.
+The typical visibility issues of a library solution are present. However, in this case, they are slightly mitigated. If a user expects you to have used this version of std::initialize and you have not, then the problems will be apparent when someone tries to use the control parameters and fails.
 
-# Control Parameters in The Language { #control_language }
+## Injection Initialization { #library_injection }
+
+The fundamental issue behind this entire problem is that the user is forced to cede control over how initialization works to external, often generic, code. The previous solution dealt with this problem by allowing users to specify the form of initialization. This solution works by handing over initialization to the use *entirely*.
+
+Guaranteed elision allows prvalues to be used to directly initialize any object. As such, syntax of the form `new(ptr) Typename(Function())` can defer the initialization of the object to `Function`. And so long as function returns a prvalue, no extraneous copies/moves are provoked.
+
+Indirect initialization functions can be created to take advantage of this. Whether these are new functions or the same ones with new type-based overloads are issues to be determined. The general idea is to have functions that take a callable of some kind, possibly with a set of parameters to pass to it. The indirect object would be initialized as if by:
+
+````
+new(memory) Type(Function(std::forward<Args>(args)...));
+````
+
+This should probably bypass `allocator_traits` entirely. Such an interface would permit users to use aggregate initialization like so:
+
+````
+vector<Aggregate> v;
+v.inject_back([]{return Aggregate{1, 4, "a string"};});
+````
+
+### Pros and Cons { #library_injection_pro_con }
+
+This solves most indirect initialization problems, since it gives the user complete and direct control over object initialization. It does a better job than allocator_traits at allowing you to control access to constructor (public vs. private). And thanks to guaranteed elision, this is quite performance friendly, and it can even work with placement new.
+
+One issue that this problem doesn't solve is dealing with template code that doesn't know or care if a type is an aggregate or non-aggregate. If the code wants to call a constructor or use list initialization if the constructor is not available, they must manually develop such an initialization function.
+
+Another issue with injection is that it makes initialization more verbose. Consider the following:
+
+````
+vector<Aggregate> v;
+v.inject_back([]{return Aggregate{1, 4, "a string"};});
+v.emplace_back(1, 4, "a string");
+````
+
+Over half of the text in the injection version is dedicated to extraneous text. If you have a `vector<T>`, then you know what type is going to be created. Yet the lambda must repeat the typename, either in the return expression or as the lambda's return type. The lambda prefix and so forth only adds to the verbosity.
+
+Even in the ideal case of expression lambdas (a feature we don't have yet, mind you), this is the best we could do:
+
+````
+v.inject_back([] => Aggregate{1, 4, "a string"});
+v.emplace_back(1, 4, "a string");
+````
+
+# Language-Based Solutions { #language }
+
+## Control Parameters in The Language { #language_control }
 
 The use of control parameters has some good aspects. But it has all of the problems of any library-only solution: we are creating a new form of initialization via a set of rules bound up in the library. That makes it very easy for users to be unaware of this kind of initialization. And it is very important that users can rely on these parameters in indirect indirect initialization scenarios.
 
-However, because these control parameters are based on values and types that do not yet exist in the standard, we could modify the language's initialization rules to control the form of initialization.
+However, because these control parameters are based on values and types that do not yet exist in the standard, we could modify the language's initialization rules to use these types to control the form of initialization at the language level.
 
 For direct or copy initialization, we can change the rules to ignore the first parameter in the initializer if that type is `std::construct_init_t`. If the first parameter is of type `std::list_init_t`, then it uses the rest of the parameters in list-initialization, as though they were in a braced-init-list.
 
@@ -235,23 +285,23 @@ This syntax also makes it possible to deal with the indirect narrowing issue. Wh
 
 Nothing in the standard library would have to change to make this work.
 
-## Pros and Cons
+### Pros and Cons { #language_control_pro_con }
 
-Apart from [all of the advantages of the library version](#control_library_pro_cons), a major side benefit is that we can access all of the advantages of list-initialization (use in brace-or-equals initializers, automatic deduction of the type being initialized, etc), but *without* the [issues of its sometimes-oddball initialization rules][ui problem]. So the old `vector<int>` problem disappears:
+Apart from [all of the advantages of the library version](#library_control_pro_cons), a major side benefit is that we can access all of the advantages of list-initialization (use in brace-or-equals initializers, automatic deduction of the type being initialized, etc), but *without* most of the [issues of its sometimes-oddball initialization rules][ui problem]. So the old `vector<int>` problem disappears:
 
 	vector<int> func() {return {std::construct_init, 5, 10};}
 
 This will always create a 5-element vector, with each element storing 10.
 
-As a language feature, it becomes more visible to users in different contexts. Indeed, given the above, users will likely want to use it frequently, which means users will be more likely to be trained to expect it. Also, it would require deliberate effort to *prevent* an indirect initializing function from allowing this functionality.
+How visible this feature will be is somewhat questionable, due to factors discussed a bit later. But because it is built into all forms of initialization, visibility is irrelevant. Users who need to write an indirect initialization function cannot help but allow this syntax to work.
 
-One really important downside here is that this creates lots of complexity in the initialization rules, which are not known for being simple. What happens if the first two parameters to the initializer are `construct_init_t` and `list_init_t`? Do you want this to mean use list-initialization or constructor initialization, with the first element being of type `list_init_t`?
+One really important downside here is that this creates lots of complexity in the initialization rules, which are not known for being simple. What happens if the first two parameters to the initializer are `construct_init_t` and `list_init_t`? Should this mean list-initialization of the parameters that aren't of those types? Or does it mean constructor initialization, with the first argument to the constructor being of type `list_init_t`?
 
 Also, how do these types behave on initialization? With a library-only solution, they behaved exactly like ordinary types. Once these types are part of general initialization, they start doing odd things:
 
 	auto x = std::construct_init;
 
-What it ought to do is copy from the value into a new variable. However, the first parameter to the initializer is of type `std::construct_init_t`, which means that we should ignore it, right? Which means that it should perform default or value initialization.
+What this ought to do is copy from the value into a new variable of its type. However, the first parameter to the initializer is of type `std::construct_init_t`, which means that we should ignore it, right? Which means that it should perform default or value initialization.
 
 But for what type? What type do we deduce `x` to be? If the first parameter is ignored, then clearly it shouldn't be part of that deduction.
 
@@ -259,21 +309,23 @@ These are hardly insurmountable problems. But they require careful thought and a
 
 Another disadvantage is that it is explicit about which form of initialization to use. While that is usually a good thing, the downside is that it is impossible to treat constructor and aggregate initialization the same way. The code passing the indirect parameters *must* be aware whether the type should use constructor or list initialization.
 
-This poses a problem with template code. Or, more to the point, it does not allow a particular degree of interface freedom. If template code were restricted by a concept to use `std::initialize<T>` for a particular set of parameters, the user would be free to pass aggregates or objects that fit that particular interface. By forcing the code to statically select `construct_init` or `list_init`, things become much more complex.
+This poses a problem with template code. Or, more to the point, it does not allow a particular degree of interface freedom. If template code were restricted by a concept to [use `std::initialize<T>`](#library_2089) for a particular set of parameters, the user would be free to pass aggregates or objects that fit that particular interface. By forcing the code to statically select `construct_init` or `list_init`, things become much more complex.
 
 This problem could be solved by having a third form: `construct_list_init`, which works like our proposed LWG 2089 fix. The template code could then rely on that particular set of functionality.
 
-A more minor problem is the added verbosity. While it would be great to be able to list-initialization syntax while still guaranteeing that non-`initializer_list` constructors will not be called, requiring a bulky identifier like `std::construct_init` is a good way to ensure that this will only be employed when absolutely necessary, rather than as a useful default.
+A more minor problem is the added verbosity. A language solution, by virtue of being part of C++'s syntax, has the potential to become widely used outside of indirect initialization scenarios. But this feature is unlikely to cause that, thanks to its verbosity. A user might want to uniformly use uniform initialization syntax, but the sheer bulk of having to use `std::construct_init` to avoid calling `initializer_list` constructors will ward such users away.
 
-# LWG 2089 by Constructor Extension { #lang2089_constructor }
+It will thus likely only see use to disambiguate corner cases, not be used day-to-day.
 
-As it currently stands, constructor syntax cannot invoke aggregate initialization. We could change that. If we do, then the [rules proposed here](#proposed) naturally fall out. Constructor syntax will use the existing rules, and any constructor calls that would be ill-formed when applied to an aggregate will instead invoke aggregate initialization if the type is an aggregate.
+## LWG 2089 by Constructor Extension { #language_2089_constructor }
+
+As it currently stands, constructor syntax cannot invoke aggregate initialization. We could change that. If we do, then the [desired LWG 2089 fix rules](#proposed) naturally fall out. Constructor syntax will use the existing rules, and any constructor calls that would be ill-formed when applied to an aggregate will instead invoke aggregate initialization. But it will only do so if the type is an aggregate.
 
 This also gives us a good chance to deal with the indirect narrowing issue. Aggregate initialization provoked through constructor syntax could permit narrowing conversions.
 
-## Pros and Cons
+### Pros and Cons { #language_2089_constructor }
 
-New initialization forms as language features have the problem of cramped syntax. Since this one overloads existing syntax, we deftly avoid that problem. Plus, since it is a syntax people commonly use, there is very little to learn. And thus, it's almost impossible to write an indirect initializing function that uses the wrong syntax.
+New initialization forms as language features have the problem of cramped syntax. Since this one overloads existing syntax, we deftly avoid that problem. Plus, since it is a syntax people commonly use, there is very little to learn. And thus, virtually all user-written indirect initialization functions will behave as the user expects them to.
 
 A more difficult issue has to do with default member initializers:
 
@@ -291,7 +343,7 @@ To avoid parsing ambiguity issues with member functions, a brace-or-equal-initia
 
 This needlessly repeats the typename (though it does not require a copy/move constructor). This could be alleviated by permitting `auto` to be used for members which have a equals-style brace-or-equal-initializer.
 
-# LWG 2089 list-initialization Extensions { #lang2089_list }
+## LWG 2089 List-Initialization Extensions { #language_2089_list }
 
 List-initialization has a lot of really useful properties, syntactically speaking. Copy-list-initialization can deduce the type to be constructed based on the context in which it is used, thus [promoting DRY principles](https://en.wikipedia.org/wiki/Don't_repeat_yourself). It is already hooked into existing syntactic mechanisms like brace-or-equal-initializers.
 
@@ -305,7 +357,7 @@ A possible syntax for this would be as follows:
 
 This would be called a "c-qualified braced-init-list". Regular braced-init-lists are "unqualified braced-init-lists". Applying a c-qualified braced-init-list to a type will invoke "c-qualified list-initialization".
 
-Note that syntactically, these work identically to a braced-init-list, and this kind of initialization is still list-initialization. As such, `T t = {c: stuff};` is still copy-list-initialization rather than direct-list-initialization.
+Note that syntactically, these work identically to a braced-init-list, and this kind of initialization is still list-initialization. As such, `T t = {c: stuff};` is still copy-list-initialization rather than direct-list-initialization, so explicit constructors (if any) will not be allowed.
 
 Also, note that the `c` here is not a keyword. It is a "special identifier", under the rules for such things. As such, there should be no need to reserve it as a keyword, and it should not interfere in parsing existing braced-init-lists.
 
@@ -345,9 +397,7 @@ The problem is that making it explicit is *really* long-winded:
 
 	vv.emplace_back(std::initializer_list<int>{1, 2, 3, 4}); //Valid code.
 	
-A library solution, using an intermediate function to convert a braced-init-list to an `initializer_list`, is not workable. The lifetime rules for the `initializer_list<T>`'s array make it non-functional.
-
-There are two cases that we want to cover: one where the compiler deduces the `T` in `initializer_list<T>`, and one where the user provides an explicit type to use. Case 1 is equivalent to `auto x = {more-than-one-value};` rules. Case 2 is when you want the compiler to use a specific `T` as well, in accord with `intializer_list<T> x = {values};` rules.
+Our goal is therefore to make this shorter. There are two cases that we want to cover: one where the compiler deduces the `T` in `initializer_list<T>`, and one where the user provides an explicit type to use. Case 1 is equivalent to `auto x = {more-than-one-value};` rules. Case 2 is equivalent to `intializer_list<T> x = {values};`, for a given `T`.
 
 Given that we already have one form of qualified list, we can add another:
 
@@ -358,7 +408,7 @@ This would be called an "l-qualified braced-init-list", which shall invoke "l-qu
 
 As with `c` above, `l` is a special identifier, not a keyword.
 
-Note that narrowing conversions will be forbidden, just as with the behavior of the equivalent syntaxes. Also, just as with `c:` syntax, designated initializers are forbidden.
+Note that narrowing conversions will be forbidden. Also designated initializers are forbidden.
 
 L-qualified lists can be used in deduced contexts. Exactly what they deduce to will be discussed below. They can also be applied to types with `initializer_list` constructors; they will only attempt to call such constructors.
 
@@ -376,23 +426,21 @@ This code seems to express the intent of the user very effectively, without ambi
 
 The concern is with aggregates which are not arrays. `IVec3` above is an aggregate of 3 variables, but is conceptually array-like in its meaning. It is a 3D vector of integers, not unlike an `array<int, 3>`. So conceptually, it makes sense to be able to use l-qualified list-initialization on it.
 
-Rather than trying to differentiate between array-like aggregates and non-array-like aggregates, it is easier to differentiate between the actual initializer values themselves.
+Rather than trying to differentiate which aggregates are array-like "enough", it is easier to differentiate between the actual initializer values themselves.
 
-The expressions of an untyped l-qualified list must be able to deduce to some `initializer_list<T>`. The expressions of a typed l-qualified list must properly fit into an `initializer_list<type>`, where `type` is the provided type. Both of these are regardless of whether they are used to initialize an aggregate.
+The expressions of an untyped l-qualified list must be able to deduce to some `initializer_list<T>`. The expressions of a typed l-qualified list must fit without narrowing into an `initializer_list<type>`, where `type` is the provided type. Both of these are regardless of whether they are used to initialize an aggregate.
 
-That being said, it is probably best to allow more unusual aggregate initialization constructs like the following:
+This is the sum total of what we check. As such, this allows unusual or incoherent initialization constructs:
 
 	Agg agg2 = {l float: 1, 2, 3};
 
-Exactly how should this behave? It doesn't trigger the previous rule, since the values do not require a narrowing conversion to fit into a `float`. But `Agg` is a sequence of `int` types. Does it make sense to permit what the user has explicitly claimed is a sequence of `float` to initialize a sequence of `int`?
+The values do not require a narrowing conversion to fit into a `float`. And the narrowing check on the actual aggregate initialization passes as well. Therefore, despite `Agg` being a sequence of integers, this initialization is allowed.
 
-Similarly, should this work:
+Similarly, this will work:
 
 	std::vector<float> vf = {l int: 1, 2, 3};
-	
-`vector<float>` only has an `initializer_list` constructor for `float`. So, should this invoke it, even though it is qualified to use `int`?
 
-Because of the difficulty of finding these corner cases, a simple resolution is to allow all of them. The list will check that there is some `T` that fits its elements. But even an explicitly qualified list type makes no requirement that the list type used in a constructor matches or that all of the aggregate members are of the list's type.
+So while an l-qualified list will check to see if it can be used to generate an appropriate `initializer_list`, it will not check to see if it is used in initialization that matches the type in question.
 
 ### Aggregate Uniformity
 
@@ -423,7 +471,7 @@ This allows us to permit these:
 
 The only difference that `emplace_back` will provoke a copy from the values in the `sized_init_list`, while `agg` will not. But that's a distinction which cannot be avoided, since we're using parameters of a function to remotely initialize an object.
 
-## Pros and Cons
+### Pros and Cons { #language_2089_list_pro_con }
 
 This feature is a big change. While it is backwards compatible, adding new syntax rather than taking any away, it is still quite sizable.
 
@@ -446,7 +494,7 @@ The principle downside of this fix is that there is a very large difference in i
 
 # Acknowledgments
 
-* Joël Lamotte: For coming up with the idea to use {:} syntax.
+* Joël Lamotte: For coming up with the idea to use {:} syntax for differentiating forms of list initialization.
 * Malte Skarupke: For bringing up the issue of using uniform initialization in generic code.
 * 
 
