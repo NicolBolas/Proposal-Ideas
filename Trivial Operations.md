@@ -91,7 +91,16 @@ If we had a type-based trivial copying function, we could explicitly verify that
 
 # Design
 
-The standard library will include the following functions. They should be part of the language support library (chapter 18).
+## Language Changes
+
+At present, trivial copying (as defined in [basic.types]/2-3) is only permitted in two cases:
+
+1. Copying from a `T` to an arbitrary byte array and back to a `T`.
+2. Copying from one `T` to another `T`.
+
+This should be modified somewhat. We should permit copying from memory which contains data that would be the value representation of a valid instance of the type `T`. Whether that data is generated directly from a copy of `T` or not should no longer be a requirement.
+
+All of the following standard library functions are defined in terms of trivial copy operations. As such, the source data must be as defined above. These functions should be part of the language support library (chapter 18).
 
 ## Trivial Construction In-Place
 
@@ -102,16 +111,12 @@ These functions construct an object in place, but they do so in such a way that 
 
 `T` will be initialized as if by a trivial constructor call.
 
-Note that while these functions could in theory be used to achieve type-punning (conversion of `int` to `float` by bits), such an operation would still be UB. The value representation of an `int` is different from that of a `float`. And the function can only work if the value representation stored in the memory matches that required for the `Type`.
-
-It could however permit you to perform punning if source and destination types are layout compatible (so long as the destination is trivially default constructible too). Strict aliasing rules are preserved, as this reuses the storage and therefore ends the lifetime of the prior objects in that storage.
-
 ````
 template<typename T>
 T *trivial_construct_in_place(void *ptr);
 ````
 
-Requires: `ptr` points to storage that contains `sizeof(T)` bytes of storage. `ptr` must be aligned to at least `alignof(T)`. `ptr` shall store the value representation of an object of type `T`.
+Requires: `ptr` points to storage that contains `sizeof(T)` bytes of storage. `ptr` must be aligned to at least `alignof(T)`. `ptr` shall store the value representation of a valid instance of the type `T`.
 
 Returns: A pointer to a `T` object which reuses the storage referenced by `ptr`. The object representation of `T` shall be exactly the same values that were stored in `ptr`, up to `sizeof(T)` bytes. `T` will be initialized as if by a trivial constructor call.
 
@@ -138,7 +143,7 @@ for(size_t i = 0; i < count; ++i)
 return ret;
 ````
 
-Requires: `count` shall not be zero.
+Requires: `count` shall not be zero. `ptr` shall contiguously store `count` value representations of valid instances of the type `T`.
 
 Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called.
 
@@ -152,7 +157,7 @@ template<typename T>
 T trivial_copy_construct(void *ptr);
 ````
 
-Requires: `ptr` points to storage that contains at least `sizeof(T)` bytes of memory. `ptr` shall store the value representation of an object of type `T`.
+Requires: `ptr` points to storage that contains at least `sizeof(T)` bytes of memory. `ptr` shall store the value representation of a valid instance of the type `T`.
 
 Returns: A prvalue of type `T` whose value representation is equivalent to the storage currently in `ptr`.
 
@@ -168,7 +173,9 @@ That would effectively be the equivalent of `trivial_construct_in_place`.
 
 ## Trivial Copy Assignment
 
-These functions perform trivial copy assignment, and fail for any types `T` which are not both trivially-copyable and Assignable.
+These functions perform trivial copy assignment to and/or from live instances of `T`. These functions require that `T` is trivially copyable. When copying to `T` objects, the functions also require that `T` is Assignable.
+
+These are effectively convenience functions, wrappers around `memcpy` and `memmove` that do some basic type-checking to see that they are not used on improper types.
 
 ````
 template<typename T>
@@ -188,7 +195,7 @@ void trivial_copy_assign(T &dst, const void *src);
 
 Equivalent to `memcpy(&dst, src, sizeof(T));`.
 
-Requires: `dst` shall be a distinct range of memory from `src` + `sizeof(T)`. `src` shall contain at least `sizeof(T)` bytes. `src` shall store the value representation of an object of type `T`. `dst` shall not be a base class subobject. If `src` points to an object of type `T`, then it shall not be a base class subobject.
+Requires: `dst` shall be a distinct range of memory from `src` + `sizeof(T)`. `src` shall contain at least `sizeof(T)` bytes. `src` shall store the value representation of a valid instance of the type `T`. `dst` shall not be a base class subobject.
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
@@ -199,7 +206,7 @@ void trivial_copy_assign(T *dst, const void *src, size_t count);
 
 Equivalent to `memcpy(dst, src, sizeof(T) * count);`. [note: It therefore has the same overlapping restrictions of `std::memcpy`.]
 
-Requires: `dst` shall not be a base class subobject. `src` shall contiguously store the value representation of `count` objects of type `T`. [note: Per the use of `memcpy`, this function implicitly requires that the address range of `dst` to `dst + count` must not overlap the range of `src` to `src + count * sizeof(T)`.] `count` shall be greater than 0.
+Requires: `count` shall be greater than 0. `dst` shall not be a base class subobject. `dst` shall point to a sequence of at least `count` objects of type `T`. `src` shall contiguously store `count` value representations of valid instances of the type `T`. [note: Per the use of `memcpy`, this function implicitly requires that the address range of `dst` to `dst + count` must not overlap the range of `src` to `src + count * sizeof(T)`.]
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
@@ -210,12 +217,33 @@ void trivial_copy_assign_relax(T *dst, const void *src, size_t count);
 
 Equivalent to `std::memmove(dst, src, sizeof(T) * count)`. [note: `memmove` lacks the overlap restrictions of `std::memcpy`.]
 
-Requires: `dst` shall not be a base class subobject. `src` shall contiguously store the value representation of `count` objects of type `T`.
+Requires: `count` shall be greater than 0. `dst` shall not be a base class subobject. `dst` shall point to a sequence of at least `count` objects of type `T`. `src` shall contiguously store `count` value representations of valid instances of the type `T`.
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
 
+````
+template<typename T>
+void trivial_copy_from(unsigned char *dst, const T &src);
+````
 
+Equivalent to `std::memcpy(dst, &src, sizeof(T))`;
+
+Requires: `dst` shall point to storage containing at least `sizeof(T)` bytes. `dst` + `sizeof(T)` shall be a distinct range of memory from `src`.
+
+Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type.
+
+````
+template<typename T>
+void trivial_copy_from(unsigned char *dst, const T *src);
+````
+Equivalent to `memcpy(dst, src, sizeof(T) * count);`.
+
+Requires: `count` shall be greater than 0. `src` shall not be a base class subobject. `dst` shall point to `count * sizeof(T)` bytes of storage. `src` shall point to a sequence of at least `count` objects of type `T`. [note: Per the use of `memcpy`, this function implicitly requires that the address range of `dst` to `dst + count` must not overlap the range of `src` to `src + count * sizeof(T)`.]
+
+Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type.
+
+There is no `relax` version of `trivial_copy_from`. The reason for this is that the `trivial_copy_from` functions are specifically meant for copying to byte arrays (which is why they take `unsigned char *` instead of `void*`). If you're writing to part of the same region of memory, then you must also be assigning to some `T` objects. In which case, you almost certainly meant to call `trivial_copy_assign`.
 
 
 
@@ -227,5 +255,9 @@ These functions should not break compatibility, nor should they be constructs th
 
 
 # Acknowledgments:
+
+* Matthew Woehlke 
+* Jens Maurer
+* Thiago Macieria
 
 
