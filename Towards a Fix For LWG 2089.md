@@ -444,7 +444,7 @@ So while an l-qualified list will check to see if it can be used to generate an 
 
 ### Aggregate Uniformity
 
-In a previous section, [this example](#disuniform) was given to represent a distinction between initializing an aggregate and initializing a non-aggregate with an `initializer_list` constructor. Adjusted for our new syntax, this is the result:
+In a previous section, [this example](#disuniform) was given to represent a distinction between initializing an aggregate and initializing a non-aggregate with an `initializer_list` constructor. Adjusted for our new syntax, we have the following:
 
 	vector<array<int, 2>> va;
 	vector<vector<int>> vv;
@@ -469,28 +469,27 @@ This allows us to permit these:
 	vector<Agg> va;
 	va.emplace_back({l: stuff});
 
-The only difference that `emplace_back` will provoke a copy from the values in the `sized_init_list`, while `agg` will not. But that's a distinction which cannot be avoided, since we're using parameters of a function to remotely initialize an object.
+The only difference is that `emplace_back` will provoke a copy from the values in the `sized_init_list`, while `agg` will not. But that's a distinction which cannot be avoided, since we're using parameters of a function to remotely initialize an object.
 
 ### Pros and Cons { #language_2089_list_pro_con }
 
-This feature is a big change. While it is backwards compatible, adding new syntax rather than taking any away, it is still quite sizable.
+This feature is a big change. While it is backwards compatible, adding new syntax rather than changing its meaning, it is still quite sizable.
 
-It is good to look at a solution of such complexity and ask if it results in something conceptually grounded, or if it's just a hodge-podge of useful stuff slapped into a convenient syntax. Or to put it another way, what does all of this syntax *mean*?
+It is good to look at a solution of such complexity and ask if it results in something conceptually meaningful, or if it's just a hodge-podge of useful stuff slapped into a convenient syntax. Or to put it another way, what does all of this syntax *mean*?
 
-Unqualified list-initialization has a meaning. It treats an object as a collection of heterogeneous values. This is what an aggregate is, after all; we simply extend that initialization to other types. This is part of the reason for prioritizing `initializer_list` constructors; homogeneous sequences of values are a subset of heterogeneous values. Such constructors therefore initialize the type as a collection of values, like a user-defined aggregate. We permit non-`initializer_list` constructors to be called, but they are conceptually treating constructor parameters as equivalent to internal object state.
+Unqualified list-initialization means to treat an object as a collection of heterogeneous values. This is what an aggregate is, after all; we simply extend that initialization to other types. This meaning justifies the prioritization of `initializer_list` constructors; such constructors initialize the type as a collection of values (homogeneous being a subset of heterogeneous), like a user-defined aggregate. We permit non-`initializer_list` constructors to be called, but they only make sense when the constructor's parameters map to internal object state.
+
+`vector`'s sized constructor parameters doesn't map to the object's contents, so it is no surprise that it can cause initialization problems.
+
+L-qualified list-initialization means to treat an object as a collection of homogeneous values. Only types whose contents can be initialized from homogeneous values can be initialized in such a way. These lists directly verify that the values are homogeneous in terms of their types, even if the object being initialized is heterogeneous.
 
 C-qualified list-initialization means to treat an object's initialization like a constructor call. Constructor parameters are constructor parameters; whether they match internal object state is up to the particular object. Aggregates are permitted, but the user is conceptually treating the aggregate as if it had a constructor that initialized its members from the parameters. That is, the fact that there is a 1:1 mapping between the object members and the parameters to `{c:}` is treated as a fortunate coincidence, a design decision that may later be changed in a backwards-compatible way.
 
-L-qualified list-initialization means to treat an object as a collection of homogeneous values. Not every object can be initialized in such a way. Such lists directly verify that the values are homogeneous in terms of their types.
-
-The principle downside of this fix is that there is a very large difference in initialization behavior between `{stuff}` and `{c: stuff}`. While that is the main point, it does create a few elements of unexpected incongruity. Unqualified list-initialization forbids narrowing in all cases, while c-qualified initialization permits narrowing. Furthermore, `{c: stuff}` will never create an `initializer_list`, even directly:
+The principle downside of this fix is that there is a very large difference in initialization behavior between `{stuff}` and `{c: stuff}`. While that is obviously the point, it does create a few elements of unexpected incongruity. Unqualified list-initialization forbids narrowing in all cases, while c-qualified initialization permits narrowing. Furthermore, `{c: stuff}` will never create an `initializer_list`, even directly:
 
 	initializer_list<int> il{c: 1, 2, 3, 4}; //Ill-formed
 
 `initializer_list` has no constructor that take 4 integer parameters. And none of the other cases apply. So it cannot be constructed in this way.
-
-
-
 
 # Acknowledgments
 

@@ -64,7 +64,7 @@ struct NoAssign
 
 The aforementioned code will compile with `NoAssign`, but it will invoke UB due to changing the value of a `const` object.
 
-What we really need is a way to construct `NoAssign` directly from a copy of the data in a piece of storage.
+What we really need is the equivalent of a copy constructor that constructs `NoAssign` as a copy of some memory.
 
 ## Trivial Copy Assignment
 
@@ -115,7 +115,7 @@ Requires: `ptr` points to storage that contains `sizeof(T)` bytes of storage. `p
 
 Returns: A pointer to a `T` object which reuses the storage referenced by `ptr`. The object representation of `T` shall be exactly the same values that were stored in `ptr`, up to `sizeof(T)` bytes. `T` will be initialized as if by a trivial constructor call.
 
-Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called. The storage starting at `ptr` and ending `sizeof(T)` bytes after this address are reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life] .]
+Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called. The storage starting at `ptr` and ending `sizeof(T)` bytes after this address are reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life].]
 
 ````
 template<typename T>
@@ -138,6 +138,8 @@ for(size_t i = 0; i < count; ++i)
 return ret;
 ````
 
+Requires: `count` shall not be zero.
+
 Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called.
 
 ## Trivial Copy Construct
@@ -147,7 +149,7 @@ This function constructs a prvalue via trivial copy construction, from a region 
 
 ````
 template<typename T>
-T trivial_construct(void *ptr);
+T trivial_copy_construct(void *ptr);
 ````
 
 Requires: `ptr` points to storage that contains at least `sizeof(T)` bytes of memory. `ptr` shall store the value representation of an object of type `T`.
@@ -175,7 +177,7 @@ void trivial_copy_assign(T &dst, const T &src);
 
 Equivalent to `memcpy(&dst, &src, sizeof(T));`.
 
-Requires: `dst` and `src` shall be distinct objects. `dst` shall not be a base class subobject.
+Requires: `dst` and `src` shall be distinct objects. Neither `dst` nor `src` shall be base class subobjects.
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
@@ -186,7 +188,7 @@ void trivial_copy_assign(T &dst, const void *src);
 
 Equivalent to `memcpy(&dst, src, sizeof(T));`.
 
-Requires: `dst` shall be a distinct range of memory from `src` + `sizeof(T)`. `src` shall contain at least `sizeof(T)` bytes. `src` shall store the value representation of an object of type `T`. `dst` shall not be a base class subobject.
+Requires: `dst` shall be a distinct range of memory from `src` + `sizeof(T)`. `src` shall contain at least `sizeof(T)` bytes. `src` shall store the value representation of an object of type `T`. `dst` shall not be a base class subobject. If `src` points to an object of type `T`, then it shall not be a base class subobject.
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
@@ -197,7 +199,7 @@ void trivial_copy_assign(T *dst, const void *src, size_t count);
 
 Equivalent to `memcpy(dst, src, sizeof(T) * count);`. [note: It therefore has the same overlapping restrictions of `std::memcpy`.]
 
-Requires: `dst` shall not be a base class subobject. `src` shall contiguously store the value representation of `count` objects of type `T`. [note: Per the use of `memcpy`, this function implicitly requires that the address range of `dst` to `dst + count` must not overlap the range of `src` to `src + count * sizeof(T)`.]
+Requires: `dst` shall not be a base class subobject. `src` shall contiguously store the value representation of `count` objects of type `T`. [note: Per the use of `memcpy`, this function implicitly requires that the address range of `dst` to `dst + count` must not overlap the range of `src` to `src + count * sizeof(T)`.] `count` shall be greater than 0.
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 

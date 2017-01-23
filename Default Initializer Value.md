@@ -91,6 +91,15 @@ DefaultInit d(std::default_init);
 
 `d` will be default initialized. It *will not* call the constructor taking a value of type `default_init_t`.
 
+Note that if the default constructor is explicit, then copy-initialization of the type is ill-formed:
+
+`````
+struct E { explicit E() = default; };
+
+E e1(std::default_init); //Fine.
+E e2 = std::default_init; //Ill-formed.
+`````
+
 ## Overload Resolution
 
 This is a sticky point with `std::default_init_t`. We do not want it to be implicitly convertible to anything. It can however initialize any default initializable object.
