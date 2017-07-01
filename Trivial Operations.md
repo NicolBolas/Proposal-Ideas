@@ -138,7 +138,7 @@ const T *trivial_construct_in_place(const void *ptr, size_t count);
 Equivalent to:
 
 ````
-auto mem = reinterpret_cast<unsigned char*>(ptr); //Or `const unsigned char*`
+auto mem = reinterpret_cast<byte*>(ptr); //Or `const byte*`
 T *ret = nullptr;
 for(size_t i = 0; i < count; ++i)
 {
@@ -160,7 +160,6 @@ Remarks: This function does not participate in overload resolution unless `T` is
 ## Trivial Copy Construct
 
 This function constructs a prvalue via trivial copy construction, from a region of storage containing `T`'s value representation. `T` is required to be trivially copyable and CopyConstructible.
-
 
 ````
 template<typename T>
@@ -234,7 +233,7 @@ Remarks: This function does not participate in overload resolution unless `T` is
 
 ````
 template<typename T>
-void trivial_copy_from(unsigned char *dst, const T &src);
+void trivial_copy_from(std::byte *dst, const T &src);
 ````
 
 Requires: `dst` shall point to storage containing at least `sizeof(T)` bytes. `dst` + `sizeof(T)` shall be a distinct range of memory from `src`.
@@ -245,7 +244,7 @@ Remarks: This function does not participate in overload resolution unless `T` is
 
 ````
 template<typename T>
-void trivial_copy_from(unsigned char *dst, const T *src);
+void trivial_copy_from(std::byte *dst, const T *src, size_t count);
 ````
 Equivalent to `memcpy(dst, src, sizeof(T) * count);`.
 
@@ -253,15 +252,58 @@ Requires: `count` shall be greater than 0. `src` shall not be a base class subob
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type.
 
-There is no `relax` version of `trivial_copy_from`. The reason for this is that the `trivial_copy_from` functions are specifically meant for copying to byte arrays (which is why they take `unsigned char *` instead of `void*`). If you're writing to part of the same region of memory, then you must also be assigning to some `T` objects. In which case, you almost certainly meant to call `trivial_copy_assign`.
-
-
+There is no `relax` version of `trivial_copy_from`. The reason for this is that the `trivial_copy_from` functions are specifically meant for copying to byte arrays (which is why they take `std::byte *` instead of `void*`). If you're writing to part of the same region of memory, then you must also be assigning to some `T` objects. In which case, you almost certainly meant to call `trivial_copy_assign`.
 
 
 # Impact on the Standard
 
-These functions should not break compatibility, nor should they be constructs that require the compiler to violate its object model.
+These functions should not break compatibility, nor should they be constructs that require the compiler to violate its object model. The language feature should also not affect compatibility.
 
+# Possible Improvements
+
+Use `span` where appropriate. The new prototypes are:
+
+````
+//trivial_construct_in_place
+template<typename T>
+T *trivial_construct_in_place(span<byte, sizeof(T)> data);
+
+template<typename T>
+const T *trivial_construct_in_place(span<const byte, sizeof(T)> data);
+
+//Array forms get a new name.
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+span<T, Extent> trivial_construct_array_in_place(span<bytes,
+	Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> data);
+	
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+span<const T, Extent> trivial_construct_array_in_place(span<const bytes,
+	Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> data);
+
+//trivial_copy_construct
+template<typename T>
+constexpr T trivial_copy_construct(span<const byte, sizeof(T)> data);
+
+//trivial_copy_assign
+template<typename T>
+constexpr void trivial_copy_assign(T &dst, span<const byte, sizeof(T)> src);
+
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+constexpr void trivial_copy_assign(span<T, Extent> dst,
+	span<const byte, Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> src);
+
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+constexpr void trivial_copy_assign_relax(span<T, Extent> dst,
+	span<const byte, Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> src);
+
+//trivial_copy_from
+template<typename T>
+void trivial_copy_from(span<byte, sizeof(T)> dst, const T &src);
+
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+void trivial_copy_from(span<T, Extent> dst,
+	span<bytes, Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> dst, span<const T, Extent> src);
+````
 
 
 # Acknowledgments:
