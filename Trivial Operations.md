@@ -30,17 +30,19 @@ fill_in_memory(mem);
 
 `fill_in_memory`, in this case, is a function which put something into that memory. This may have read data from a file-stream, it may be a packet from a TCP/IP socket, whatever. However, we as the user know exactly what `fill_in_memory` wrote. And using standard layout rules, we are able to construct `Type` (for this platform) to match the value representation of that data. So logically, `mem` now contains `Type`.
 
-But as far as the C++ object model is concerned, `mem` does not contain `Type`. Therefore:
+But as far as the C++ object model is concerned, `mem` does not contain `Type`. So let us consider the common next statement:
 
 ````
 auto ptr = static_cast<Type*>(mem);
 ````
 
-The use of `ptr` represents undefined behavior. This kind of casting is frequently done in low-level code anyway, because `Type` is trivially default constructible and so long as the value representation stored in `ptr` matches `Type`'s value representation, it ought to work. But that doesn't make it any less UB.
+The use of `ptr` represents undefined behavior, since `mem` does not in fact contain `Type`. This kind of casting is frequently done in low-level code anyway, because `Type` is trivially default constructible and so long as the value representation stored in `ptr` matches `Type`'s value representation, it ought to work.
+
+But that doesn't make it any less UB, as far as the standard is concerned.
 
 Note that `new(mem) Type` is not guaranteed to *preserve* the contents of `mem`. Debug builds often write arbitrary values, even during placement new operations, and this behavior is permitted by the standard.
 
-What we need is a function which will begin the lifetime of `Type`, but preserve the contents of the memory it is being built within.
+What we need is a function which will begin the lifetime of `Type`, but preserve the contents of the memory it is being built within. However, it also needs to do this only for types where it is reasonable to be able to do so.
 
 ## Trivial Copy Construct
 
@@ -51,7 +53,7 @@ T t;
 memcpy(&t, src, sizeof(T));
 ````
 
-While the aforementioned ability to construct an object within that memory would allow us to handle this in-situ, perhaps we need to reuse `src` or maybe it does not belong to us. Regardless of why, we want to construct an object from the contents of that memory.
+While the aforementioned ability to construct an object within that memory would allow us to handle this in-situ, perhaps we need to reuse `src` or maybe it is memory that does not belong to us. Regardless of why, we want to construct an object by copying its object representation from the contents of that memory.
 
 The above idiom imposes a restriction on `T`; it requires not only that it is trivially-copyable but that it is Assignable. For example:
 
@@ -76,18 +78,18 @@ std::memcpy(&dstObj, &srcObj, sizeof(Typename));
 
 Some repetition has to be done here, since `sizeof(Typename)` is deducible from the actual types of the memory.
 
-But more importantly, there are types which are trivially copyable yet are not Assignable:
+But more importantly, there are types which are trivially copyable yet are not Assignable, like the aforementioned `NoAssign`:
 
 ````
-struct Type
+struct NoAssign
 {
 	const int i;
 };
 ````
 
-To perform trivial copy assignment on `Type` violates the prohibition on changing a `const` object. As such, `Type` has `delete`d copy and move assignment operators. But `memcpy` will work just fine.
+To perform trivial copy assignment on `NoAssign` violates the prohibition on changing a `const` object. As such, `NoAssign` has `delete`d copy and move assignment operators. But `memcpy` will compile just fine, allowing us to encounter undefined behavior, even though it is statically detectable.
 
-If we had a type-based trivial copying function, we could explicitly verify that the type was assignable, and if it is not issue a compile error. It could also be used to trivially copy arrays of data. `std::copy` could do so as well, but having a function specifically for trivial copies makes it clear to the reader that the code is intended to take advantage of doing just a `memcpy`.
+If we had a type-based trivial copying function, we could explicitly verify that the type was assignable, and if it is not issue a compile error. It could also be used to trivially copy arrays of data. `std::copy` could do so as well, but having a function specifically for trivial copies makes it clear to the reader that the code is going to merely call `memcpy` or `memmove`.
 
 # Design
 
@@ -98,18 +100,18 @@ At present, trivial copying (as defined in [basic.types]/2-3) is only permitted 
 1. Copying from a `T` to an arbitrary byte array and back to a `T`.
 2. Copying from one `T` to another `T`.
 
-This should be modified somewhat. We should permit copying from memory which contains data that would be the value representation of a valid instance of the type `T`. Whether that data is generated directly from a copy of `T` or not should no longer be a requirement.
+We want to make a small modification to these rules. Item 1 permits copying of a value representation of `T`, but it only recognizes this if those bytes started from an actual `T`. We should permit copying from memory which contains data that would be the value representation of a valid instance of the type `T`, regardless of how those bytes got there.
 
-All of the following standard library functions are defined in terms of trivial copy operations. As such, the source data must be as defined above. These functions should be part of the language support library (chapter 18).
+All of the following standard library functions are defined in terms of trivial copy operations. As such, the source data must be as defined above. These functions should be part of the language support library [language.support], or otherwise should be required to be supported by any C++ implementation.
 
 ## Trivial Construction In-Place
 
 These functions construct an object in place, but they do so in such a way that the object's initial value representation shall be the data currently residing in that memory. These functions require `T` to be either:
 
-1. Trivially default constructible.
-2. Trivially copyable and CopyConstructible.
+* Trivially default constructible.
+* Trivially copyable and CopyConstructible.
 
-`T` will be initialized as if by a trivial constructor call.
+`T` will be initialized as if by a trivial constructor call: either the trivial default constructor or the trivial copy constructor.
 
 ````
 template<typename T>
@@ -149,7 +151,7 @@ for(size_t i = 0; i < count; ++i)
 return ret;
 ````
 
-Requires: `count` shall not be zero. `ptr` shall contiguously store `count` value representations of valid instances of the type `T`.
+Requires: `count` shall not be zero. `ptr` shall contiguously store `count` value representations of valid instances of the type `T`. `ptr` must be aligned to at least `alignof(T)`.
 
 Complexity: O(1) with respect to `sizeof(T)`.
 
@@ -181,9 +183,9 @@ That would effectively be the equivalent of `trivial_construct_in_place`.
 
 ## Trivial Copy Assignment
 
-These functions perform trivial copy assignment to and/or from live instances of `T`. These functions require that `T` is trivially copyable. When copying to `T` objects, the functions also require that `T` is Assignable.
+These functions perform trivial copy assignment to and/or from live instances of `T`. These functions require that `T` is trivially copyable. When copying to existing `T` objects, the functions also require that `T` is Assignable.
 
-These are effectively convenience functions, wrappers around `memcpy` and `memmove` that do some basic type-checking to see that they are not used on improper types.
+These are effectively convenience functions, wrappers around `memcpy` and `memmove` that do some basic type-checking to ensure that they are only used on types that support the operations.
 
 ````
 template<typename T>
@@ -201,7 +203,7 @@ template<typename T>
 constexpr void trivial_copy_assign(T &dst, const void *src);
 ````
 
-Requires: `dst` shall be a distinct range of memory from `src` + `sizeof(T)`. `src` shall contain at least `sizeof(T)` bytes. `src` shall store the value representation of a valid instance of the type `T`. `dst` shall not be a base class subobject.
+Requires: The object `dst` shall be a distinct range of memory from `src` + `sizeof(T)`. `src` shall contain at least `sizeof(T)` bytes. `src` shall store the value representation of a valid instance of the type `T`. `dst` shall not be a base class subobject.
 
 Effects: Equivalent to `memcpy(&dst, src, sizeof(T));`.
 
