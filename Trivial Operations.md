@@ -114,23 +114,29 @@ These functions construct an object in place, but they do so in such a way that 
 ````
 template<typename T>
 T *trivial_construct_in_place(void *ptr);
+template<typename T>
+const T *trivial_construct_in_place(const void *ptr);
 ````
 
 Requires: `ptr` points to storage that contains `sizeof(T)` bytes of storage. `ptr` must be aligned to at least `alignof(T)`. `ptr` shall store the value representation of a valid instance of the type `T`.
 
 Returns: A pointer to a `T` object which reuses the storage referenced by `ptr`. The object representation of `T` shall be exactly the same values that were stored in `ptr`, up to `sizeof(T)` bytes. `T` will be initialized as if by a trivial constructor call.
 
+Complexity: O(1) with respect to `sizeof(T)`. [note: Implementations are not allowed to implement this function by doing a pair of `memcpy`s.]
+
 Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called. The storage starting at `ptr` and ending `sizeof(T)` bytes after this address are reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life].]
 
 ````
 template<typename T>
 T *trivial_construct_in_place(void *ptr, size_t count);
+template<typename T>
+const T *trivial_construct_in_place(const void *ptr, size_t count);
 ````
 
 Equivalent to:
 
 ````
-auto mem = reinterpret_cast<unsigned char*>(ptr);
+auto mem = reinterpret_cast<unsigned char*>(ptr); //Or `const unsigned char*`
 T *ret = nullptr;
 for(size_t i = 0; i < count; ++i)
 {
@@ -145,6 +151,8 @@ return ret;
 
 Requires: `count` shall not be zero. `ptr` shall contiguously store `count` value representations of valid instances of the type `T`.
 
+Complexity: O(1) with respect to `sizeof(T)`.
+
 Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called.
 
 ## Trivial Copy Construct
@@ -154,7 +162,7 @@ This function constructs a prvalue via trivial copy construction, from a region 
 
 ````
 template<typename T>
-T trivial_copy_construct(void *ptr);
+constexpr T trivial_copy_construct(const void *ptr);
 ````
 
 Requires: `ptr` points to storage that contains at least `sizeof(T)` bytes of memory. `ptr` shall store the value representation of a valid instance of the type `T`.
@@ -179,45 +187,45 @@ These are effectively convenience functions, wrappers around `memcpy` and `memmo
 
 ````
 template<typename T>
-void trivial_copy_assign(T &dst, const T &src);
+constexpr void trivial_copy_assign(T &dst, const T &src);
 ````
-
-Equivalent to `memcpy(&dst, &src, sizeof(T));`.
 
 Requires: `dst` and `src` shall be distinct objects. Neither `dst` nor `src` shall be base class subobjects.
 
+Effects: Equivalent to `memcpy(&dst, &src, sizeof(T));`.
+
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
 ````
 template<typename T>
-void trivial_copy_assign(T &dst, const void *src);
+constexpr void trivial_copy_assign(T &dst, const void *src);
 ````
-
-Equivalent to `memcpy(&dst, src, sizeof(T));`.
 
 Requires: `dst` shall be a distinct range of memory from `src` + `sizeof(T)`. `src` shall contain at least `sizeof(T)` bytes. `src` shall store the value representation of a valid instance of the type `T`. `dst` shall not be a base class subobject.
 
+Effects: Equivalent to `memcpy(&dst, src, sizeof(T));`.
+
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
 ````
 template<typename T>
-void trivial_copy_assign(T *dst, const void *src, size_t count);
+constexpr void trivial_copy_assign(T *dst, const void *src, size_t count);
 ````
-
-Equivalent to `memcpy(dst, src, sizeof(T) * count);`. [note: It therefore has the same overlapping restrictions of `std::memcpy`.]
 
 Requires: `count` shall be greater than 0. `dst` shall not be a base class subobject. `dst` shall point to a sequence of at least `count` objects of type `T`. `src` shall contiguously store `count` value representations of valid instances of the type `T`. [note: Per the use of `memcpy`, this function implicitly requires that the address range of `dst` to `dst + count` must not overlap the range of `src` to `src + count * sizeof(T)`.]
 
+Effects: Equivalent to `memcpy(dst, src, sizeof(T) * count);`. [note: It therefore has the same overlapping restrictions of `std::memcpy`.]
+
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
 ````
 template<typename T>
-void trivial_copy_assign_relax(T *dst, const void *src, size_t count);
+constexpr void trivial_copy_assign_relax(T *dst, const void *src, size_t count);
 ````
 
-Equivalent to `std::memmove(dst, src, sizeof(T) * count)`. [note: `memmove` lacks the overlap restrictions of `std::memcpy`.]
-
 Requires: `count` shall be greater than 0. `dst` shall not be a base class subobject. `dst` shall point to a sequence of at least `count` objects of type `T`. `src` shall contiguously store `count` value representations of valid instances of the type `T`.
+
+Effects: Equivalent to `std::memmove(dst, src, sizeof(T) * count)`. [note: `memmove` lacks the overlap restrictions of `std::memcpy`.]
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
@@ -227,9 +235,9 @@ template<typename T>
 void trivial_copy_from(unsigned char *dst, const T &src);
 ````
 
-Equivalent to `std::memcpy(dst, &src, sizeof(T))`;
-
 Requires: `dst` shall point to storage containing at least `sizeof(T)` bytes. `dst` + `sizeof(T)` shall be a distinct range of memory from `src`.
+
+Effects: Equivalent to `std::memcpy(dst, &src, sizeof(T))`;
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type.
 
