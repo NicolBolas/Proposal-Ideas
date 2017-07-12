@@ -8,9 +8,9 @@ This proposal specifies the ability to declare member and base class subobjects 
 
 C++'s object model does not allow for the size of any complete type to be 0. Every complete object must take up a certain region of storage.
 
-However, the object model does permit the layout of a class to allocate no storage to a particular subobject. The standard even effectively mandates this through standard layout rules: an empty, standard layout base class in a standard layout type must effectively have zero storage within the class it is a base class of. This does not affect the `sizeof` the base class subobject, as stated in [expr.sizeof]/2.
+However, the object model does permit the layout of a class to allocate no storage to a particular subobject. The standard even effectively mandates this through standard layout rules: an empty, standard layout base class in a standard layout type must effectively have zero storage within the class it is a base class of (within certain restrictions). This does not affect the `sizeof` the base class subobject, as stated in [expr.sizeof]/2.
 
-This proposal is to expand these zero sized subobjects in two ways. First, to enforce that a particular base class subobject will be zero sized. Second, and most importantly, to enforce that a particular *member* subobject will be zero sized.
+This proposal expands these zero sized subobjects in two ways. First, to enforce that a particular base class subobject will be zero sized. Second, and most importantly, to enforce that a particular *member* subobject will be zero sized.
 
 One of the primary use cases for this feature is as follows.
 
@@ -159,6 +159,8 @@ Zero sized subobjects created through stateless classes are exempt from the [uni
 
 Declaring an array of a stateless type as an NSDM is il-formed. Stateless types may not be used as members of a union.[^1]
 
+[^1]: This is mainly to avoid confusion. If you declare a stateless member, you expect it to be zero sized. So forbidding constructs where that is not possible is reasonable.
+
 The standard library will need a traits class to detect if a type is stateless, since this does restrict the type's use.
 
 ## Stateless anonymous types
@@ -261,15 +263,19 @@ Neither of these are legal. The base class `holder` has a zero sized `empty` NSD
 
 Note that C++'s general forbearance of aliasing with the same type prevents `data4a` from being a genuine case of aliasing. Even though `holder` is an empty class, `data4a` isn't standard layout because the base class is the same type as the first NSDM. So the standard requires that the base class and the first member have different addresses. Thus, the two zero sized members of each cannot alias. So this is a false positive.
 
+## Lambdas
+
+We can also allow lambdas to take advantage of zero sized subobjects by having them implicitly declare all member variables as `zero_sized(auto)`. Lambdas with all zero sized members would still not be eligible for implicit conversion to function pointers.
+
 # Design rationale
 
 A number of restrictions on the use of zero sized subobjects come from implementation restrictions or the needs of basic C++ assumptions about types. This section goes into detail about some of the rationales for the design decisions, as well as alternatives that were discarded.
 
 ## Memory locations
 
-C++'s object model already permits the concept of zero sized subobjects ([intro.object]/5-6). At present, these are only applied to base classes ([class]/4), and only *required* under standard layout rules ([class]/7). Such zero sized subobjects are permitted to have the same address as their containing object.
+C++'s object model already permits the concept of zero sized subobjects ([intro.object]/7-8). At present, these are only applied to base classes ([class]/4), and only *required* under standard layout rules ([class]/7). Such zero sized subobjects are permitted to have the same address as their containing object.
 
-We simply want to piggy-back off of these rules. However, this my cause problems with strict aliasing rules, as we would have two unrelated types which have the same address (two of the same type with the same address is covered under the [unique identity rule](#identity)).
+We simply want to piggy-back off of these rules. However, this may cause problems with strict aliasing rules, as we would have two unrelated types which have the same address (two of the same type with the same address is covered under the [unique identity rule](#identity)).
 
 So we might need an alteration to [basic.lval]/10 to permit zero sized subobjects to work. It would be an added exemption to the list of exemptions there.
 
@@ -279,7 +285,7 @@ Given that the address of a zero sized subobject could be any valid address with
 
 Implementation-wise, the difficulty will be in changing how types are laid out. That is, modifying ABIs to allow member subobjects that have no size and enforcing EBO even when it might otherwise have not been performed.
 
-The behavior of the *user* converting pointers/references between two unrelated zero sized subobjects should still be undefined.
+The behavior of the *user* converting pointers/references directly between two unrelated zero sized subobjects (via `static_cast<OtherType&>(empty_member)`) should still be undefined.
 
 ## Arrays of zero sized objects
 
@@ -328,9 +334,13 @@ An empty type has no valid data; it has no real value representation. But under 
 
 The present rules of C++ allow a number of cases where the addresses of two object instances are equal. This involves subobjects: base classes can have the same address as the derived class. The first member subobject often has the address of the containing class. And for standard layout types, empty base classes will have the same address as the first member, which will have the same address as the containing class.
 
-Despite all of this, there is one inviolate rule with subobject layout: for any two distinct objects of the same type `T`, they will have *different addresses*. Because of this rule, an empty type can grant itself state by using its `this` pointer as a unique identifier, with the state being stored and accessed externally to the object instance.
+Despite all of this, there is one inviolate rule with subobject layout: for any two distinct objects of the same type `T`, they will have *different addresses*.[^2] Because of this rule, an empty type can grant itself state by using its `this` pointer as a unique identifier, with the state being stored and accessed externally to the object instance.
 
-However, in order to make a subobject zero sized, in order for it to not affect the layout of its containing type, we have to accept that the pointer value could alias with another object. And therefore, the address of one instance of a type could alias with the address of another instance of the same type. If the type were written to use external state based on its `this` pointer (or if code using that type were written expecting it), then we would break that expectation and therefore potentially that code.
+[^2]: Note that this is not an inviolate rule of C++ itself. You can nest an object within itself manually, by creating aligned storage as the first member subobject of a type, then constructing an object of that same type within the storage. But we're talking only about objects created with non-dynamic storage duration.
+
+However, in order to make a subobject zero sized, in order for it to not affect the layout of its containing type, we have to accept that the pointer value could alias with another object. And therefore, the address of one instance of a type could alias with the address of another instance of the same type. If the type were written to use external state based on its `this` pointer (or if code using that type were written expecting it), then we would break that expectation and therefore potentially that code.[^3]
+
+[^3]: Of course, we could also break that expectation by using "nested within" gymnastics. But we're trying to prevent breaking existing code by accident.
 
 As such, blindly applying `zero_sized` to any empty layout type could have unpleasant consequences. Various alternatives were considered to solve this problem; the solution proposed here is the last one presented, and is implemented in the [design section above](#design).
 
@@ -344,7 +354,7 @@ One solution considered was to just ignore the problem. The scope of the problem
 
 3. The type is used as a zero sized subobject which aliases with another instance of itself within the same object.
 
-Users who do #1 can defend themselves against #2 simply by declaring that the type has an NSDM of type `char`. Alternatively, we can define special syntax to allow users to actively prevent a empty layout from being used as a stateless subobject.
+Users who do #1 can defend themselves against #2 simply by declaring that the type has an NSDM of type `char`. Alternatively, we can define special syntax to allow users to actively prevent an empty layout type from being used as a stateless subobject.
 
 ### There is no problem
 
@@ -370,15 +380,15 @@ As such, constructing one member subobject begins its lifetime. Constructing a s
 
 ### Only stateless types can be zero sized subobjects
 
-With this solution, we make the assumption that, if a user declares that a type is `stateless`, then they are making a strong claim about this type. Namely that losing identity is perfectly valid, that it is reasonable for two objects of the same type to have the same address and live in the same memory.
+Since `stateless` is a new declaration for a type, a user to declares their type as such is making a strong claim about it. The claim is that losing identity is perfectly valid, that it is reasonable for two objects of the same type to have the same address and live in the same memory.
 
-So we solve the problem by only permitting zero sized subobjects of types that are themselves declared stateless. That way, we know that the user expects such types to alias. This also means that stateless types can only have subobjects of other stateless types (lest they be able to lose identity as well).
+So we could solve the unique identity problem by only permitting zero sized subobjects of types that are themselves declared stateless. That way, we know that the user expects such types to alias. This also means that stateless types can only have subobjects of other stateless types (lest they be able to lose identity as well).
 
 This solves the unique identity problem by forcing the user to explicitly specify when it is OK to lose unique identity. However, it fails to solve the general problem of people using EBO as a means for having a zero sized subobject. They will continue to do so, as the set of `stateless` declared objects will always be smaller than the set of empty layout types that qualify for EBO.
 
 ### Explicitly forbid the problem cases
 
-The unique identity problem arises because two zero sized subobjects of the same type exist within the same containing type in such a way that they could alias. So we can simply forbid that. This is a special case rule, very similar to the one that prevents types from being standard layout if their first NSDM is the same type as one of their empty base classes.
+The unique identity problem arises because two zero sized subobjects of the same type exist within the same containing type in such a way that they could alias. So we can simply forbid that. This is a special case rule, very similar to the one that prevents types from being standard layout if their first NSDM causes a type-matching overlap with one of their empty base classes.
 
 We declare that an object which has a zero sized subobject that can alias with another instance of that type is il-formed. This would be recursive, up the subobject containment hierarchy. That's the general idea, but the current rule takes note of the fact that a zero sized object cannot alias with other objects of its type if it is contained in the exact same object declaration.
 
@@ -403,8 +413,7 @@ The change to the rule of standard layout is as follows. We replace the standard
 > * All member subobjects declared `zero_sized`, if they are not `stateless`
 > * All base class subobjects, if they are not `stateless`
 > * The first non-zero sized NSDM (if it is an array, then the first element). `stateless` types are always zero sized.
->
-> Apply this rule to each individual type recursively, adding those subobjects to the list of aliasing subobjects.
+> * Apply the previous rules to each such type recursively, adding those subobjects to the list of aliasing subobjects.
 >
 > The type `T` is not standard layout if any two aliasing subobjects have the same type.
 
@@ -412,7 +421,7 @@ Note that this rule explicitly exempts types declared `stateless`. Such types ar
 
 This rule ensures that it is safe to assign the memory location of zero sized subobjects to the same location of their containing type. In non-standard layout cases, implementations may have to give the empty class storage to ensure that it does not alias.
 
-This also means that we will not strictly need `zero_sized(auto)` syntax. Since `zero_sized` is a request rather than a requirement, applying it to non-empty layout types is not a compile error. It is just a request which could not be fulfilled. However, to do that also means that we need a distinction between merely applying `zero_sized` to a subobject declaration and applying `zero_sized` to a subobject declaration who's type is empty layout.
+This also means that we will not need `zero_sized(auto)` syntax. Since `zero_sized` is a request rather than a requirement, applying it to non-empty layout types is not a compile error. It is just a request which could not be fulfilled. However, to do that also means that we need a distinction between merely applying `zero_sized` to a subobject declaration and applying `zero_sized` to a subobject declaration who's type is empty layout.
 
 While I personally dislike this solution (mainly because it makes `zero_sized` a suggestion rather than failing when it can't work), it does have the effect of creating a rule that is comprehensive. The rule for standard layout types is simple and reasonable, covering existing base class cases as well as the new zero sized case. It allows stateless types to alias freely, so that they will guarantee layout. At the same time, compilers have the freedom to add padding or even use existing padding to avoid aliasing on types where that may not be appropriate.
 
@@ -502,7 +511,7 @@ The problem with this solution is that it does not solve the general zero sized 
 
 # Standard notes:
 
-* [intro.object]/5-6: Explains how base classes can be zero sized. Also explains that different instances of the same type must have distinct addresses.
+* [intro.object]/7-8: Explains how base classes can be zero sized. Also explains that different instances of the same type must have distinct addresses.
 * [basic.lval]/10: The "strict aliasing rule".
 * [class]/4: States that member subobjects cannot be zero sized. But explicitly does not mention base classes.
 
@@ -518,5 +527,3 @@ From the C++ Future Discussions forum:
 * Matthew Woehlke
 * Bengt Gustafsson
 * Thiago Macieira, who initially identified the unique identity problem.
-
-[^1]: This is mainly to avoid confusion. If you declare a stateless member, you expect it to be zero sized. So forbidding constructs where that is not possible is reasonable.

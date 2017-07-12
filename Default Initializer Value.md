@@ -55,18 +55,19 @@ However, even if you pass no parameters, they will still value-initialize the da
 
 # Design
 
-We first declare a new type in the standard library: `std::default_init_t`. This is a special type which the language looks for in certain circumstances. This is similar to how `std::nullptr_t`'s behavior in the standard. For example, it can be converted to an integer type or a pointer type, but `nullptr_t` does not have `operator int` or `operator T*` overloads. The conversion happens because the language says so, and it is not considered an overloaded conversion operator.
+We first declare a new type in the standard library: `std::default_init_t`. This is a special type which the language looks for in certain circumstances. This is similar to `std::nullptr_t`'s behavior in the standard. For example, it can be converted to an integer type or a pointer type, but `nullptr_t` does not have `operator int` or `operator T*` overloads. The conversion happens because the language says so, and it is not considered an overloaded conversion operator.
 
 `std::default_init_t` will be:
 
-1. Trivial type
-2. `==` and `!=` with itself. All instances are considered equal to each other.
+1. A TrivialType
+2. Not DefaultConstructible
+2. EqualityComparable, though instances are considered equal to each other.
 
 `std::default_init` shall be a `const`-qualified value of type `std::default_init_t`. Aside from copying or moving, it is the only way to get a value of `std::default_init_t` type. This is much like `std::in_place_t`'s relationship to `std::in_place`.
 
 A value of type `std::default_init_t` works like a normal C++ object, except in ways that will be discussed below.
 
-The list in [dcl.init]/17 shall be changed to add a new entry, probably after 17.2. If the initializer is a single value of type `std::default_init_t`, then the destination object will be default initialized (in accord with [dcl.init]/7). Also, if the type being initialized is a reference, then a default-initialized prvalue of the referenced type will be initialized and assigned to the reference.
+The list in [dcl.init]/17 shall be changed to add a new entry, immediately after 17.4. If the initializer is a single value of type `std::default_init_t`, then the destination object will be default initialized (in accord with [dcl.init]/7). Also, if the type being initialized is a reference, then a default-initialized prvalue of the referenced type will be initialized and assigned to the reference.
 
 As such, all of the following will perform default initialization:
 
@@ -77,7 +78,7 @@ T t[23] = std::default_init;
 new T(std::default_init);
 `````
 
-Note that this special initialization *overrides* constructor calls. So if you have this:
+Note that the placement of the initialization in [dcl.init]/17 happens before constructor calls. This is deliberate. So, if you have this:
 
 `````
 struct DefaultInit
@@ -102,7 +103,7 @@ E e2 = std::default_init; //Ill-formed.
 
 ## Overload Resolution
 
-This is a sticky point with `std::default_init_t`. We do not want it to be implicitly convertible to anything. It can however initialize any default initializable object.
+This is a sticky point with `std::default_init_t`. This type is not implicitly convertible to any type. Yet it has the ability to default initialize any object which can undergo default initialization.
 
 So we want the following:
 
@@ -119,13 +120,13 @@ func2(std::default_init);
 func3(std::default_init);
 `````
 
-We want the call to `func1` to work. But we want the call to `func2` to fail. And we want the call to `func3` to call the overload specifically taking `default_init_t`.
+We want the call to `func1` to work, by passing a default initialized `i`. But we want the call to `func2` to fail, due to both overloads being equivalent. And we want the call to `func3` to call the overload specifically taking `default_init_t`.
 
 ## List Initialization
 
-The change above notably does not affect list initialization; [dcl.init]/17.1 sends all braced-init-list-bound objects to [dcl.init.list] for resolution.
+The change above notably does not affect list initialization; [dcl.init]/17.1 sends all braced-init-list-bound objects to [dcl.init.list] for resolution. And this determination happens well in advance of our new [dcl.init]17 statement.
 
-This is a *deliberate* omission. Consider the following:
+This is *deliberate*. Consider the following:
 
 `````
 struct Agg
@@ -176,15 +177,15 @@ Of course, as a *consequence* of this rule, if the type being initialized is not
 
 The one exception is if the first parameter of one of the constructors is of the type `std::default_init_t` itself. In which case, it will be called correctly.
 
-We could of course change list initialization rules to check for initialization from a single `default_init_t` value, but only after passing over to aggregate initialization. However, this could be considered quite incongruous. The current way it works seems to work within an interpretation of what list initialization means.
+We could of course change list initialization rules to check for initialization from a single `default_init_t` value, but only after passing over to aggregate initialization. However, this could be considered quite incongruous. The proposed way to do this follows a particular interpretation of what list initialization means.
 
 List initialization conceptually means to initialize an object from a potentially-heterogeneous sequence of values. Calling a constructor is simply a way to provide those values to an object's initialization. This helps explain list-initialization's preference for `initializer_list` constructors; it isn't about calling constructors, it is about treating the object as a sequence of values.
 
-Given that understanding of list-initialization, it makes sense to have `{std::default_init}` to default initialize the first member rather than the object itself. Which means default initializing the first parameter of a constructor.
+Given that understanding of list-initialization, it makes sense to for `{std::default_init}` to default initialize the first member rather than the object itself. Which means default initializing the first parameter of a constructor.
 
 ## Library Changes
 
-The language itself takes care of `allocator` and `allocator_traits` issues. Calling `construct(std::default_init_t)` will perform default initialization automatically. So all of the `emplace`-style APIs are automatically functional with `std::default_init`. So there are fewer forward-facing library APIs that need explicit overloads.
+The language itself takes care of `allocator` and `allocator_traits` issues. Calling `allocator_traits<...>::construct(std::default_init_t)` will perform default initialization automatically. So all of the `emplace`-style APIs are automatically functional with `std::default_init`. So there are fewer forward-facing library APIs that need explicit overloads.
 
 Containers (including `basic_string`) should be changed to have specific overloads for `default_init_t`-based initialization. Specifically, the following should have an overload that takes `default_init_t`:
 

@@ -8,13 +8,13 @@ The problem is that aggregates, by definition, do not have a constructor. Theref
 
 Unfortunately, we cannot simply declare that indirect initialization functions will always use list-initialization. This would not be backwards compatible with existing code. Even if that were not true, it would hide access to certain constructors.
 
-This paper starts with examining a potential problem in the current solution, along with a fix for it. Then it evaluates ways to resolve this problem through the language and the library. No particular solution is actively being suggested here; this is primarily to example the scope of such construct.
+This paper starts with examining a potential problem in the current solution, along with a fix for it. Then it evaluates ways to resolve this problem; some solutions are pure-library solutions, while other involve language changes. No particular solution is actively being suggested at present; this is primarily to examine the scope of the solutions.
 
 # Flaws in the Proposed Solution
 
 LWG 2089 outlines a proposed library-only solution. `allocator::construct` would perform as follows:
 
-> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_constructible<U, Args...>::value` is `true`, else `::new((void *)p) U{std::forward<Args>(args)...}`
+> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_constructible_v<U, Args...>` is `true`, else `::new((void *)p) U{std::forward<Args>(args)...}`
 
 Obviously, such a solution should be applied equally to such functions which do not rely on `allocator::construct` (`make_unique/shared`, in-place object constructors, and the like). But this has a significant flaw beyond that.
 
@@ -41,9 +41,9 @@ I suspect that users would find this to be surprising. A user would probably exp
 
 At the same time, the following is not an adequate solution either:
 
-> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_aggregate<U>::value` is `false`, else `::new((void *)p) U{std::forward<Args>(args)...}`
+> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_aggregate_v<U>` is `false`, else `::new((void *)p) U{std::forward<Args>(args)...}`
 
-Ignoring that `is_aggregate` is not an actual type trait, the problem here is dealing with this unusual circumstance<a name="agg-problem"/>:
+Ignoring that `is_aggregate/_v` is not an actual type trait, the problem here is dealing with this unusual circumstance<a name="agg-problem"/>:
 
 	struct Agg
 	{
@@ -65,7 +65,7 @@ The initialization of `a2` does *not* work, because it attempts to use aggregate
 
 <a name="proposed"/>Therefore, a complete fix which is backwards-compatible while making sure not to invoke `initializer_list` constructors improperly would be the following:
 
-> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_constructible<U, Args...>::value` is `true`, else `::new((void *)p) U{std::forward<Args>(args)...}` if `is_aggregate<U>::value` is true, else ill-formed.
+> Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_constructible_v<U, Args...>` is `true`, else `::new((void *)p) U{std::forward<Args>(args)...}` if `is_aggregate_v<U>` is true, else ill-formed.
 
 This version will only use list-initialization on actual aggregates, and only when constructor initialization is not possible. It therefore represents a more targeted fix.
 
@@ -125,7 +125,7 @@ LWG 2089, as a solution, cannot resolve this, but some language solutions can.
 
 ## A New Form of Initialization
 
-It is vital to understand that, by implementing *any* fix for LWG 2089, we will be introducing a *new form* of initialization into C++. This form is a means of initializing objects which uses a unique set of initialization rules, reliant on other forms yet the collection is distinct from them. And we will be standardizing this initialization form, employing it throughout the standard library.
+It is vital to understand that, by implementing *any* fix for LWG 2089, we will be introducing a *new form* of initialization into C++. This form is a means of initializing objects which uses a unique set of initialization rules. While it may rely on other initialization forms, the collection remains a distinct initialization form. And we will be making this form a de-facto standard, by employing it throughout the standard library's indirect initialization case.
 
 By applying this new initialization form to all indirect initialization APIs, users will need to be aware of its behavior and quirks. As Ville Voutilainen outlined in [N4462][ville], it is very important for users to be able to not merely understand this form of initialization, but to write it into their own APIs. When a user goes to implement their own indirect initialization APIs, we want them to have the same behavior.
 
@@ -173,7 +173,7 @@ The standard library could simply provide this function as a common indirect ini
 
 ### Pros and Cons { #library_2089_pro_con }
 
-The principle advantage of this library-only feature is that it is self-contained. We would be introducing a new initialization form, but it would be one that lives.
+The principle advantage of this library-only feature is that it is self-contained. We would be introducing a new initialization form, but it would be one that lives entirely in the standard .
 
 One downside of this solution is narrowing. When performing list initialization directly, you can provide an integer or floating-point literal, even to parameters that are smaller than the type that the literal would otherwise deduce to. So if you pass a literal "1" to a `char`, that is fine, because the compiler can detect the constant expression and see that "1" is in the range of char.
 
@@ -229,7 +229,7 @@ The typical visibility issues of a library solution are present. However, in thi
 
 ## Injection Initialization { #library_injection }
 
-The fundamental issue behind this entire problem is that the user is forced to cede control over how initialization works to external, often generic, code. The previous solution dealt with this problem by allowing users to specify the form of initialization. This solution works by handing over initialization to the use *entirely*.
+The fundamental issue behind this entire problem is that the user is forced to cede control over how initialization works to external, often generic, code. The previous solution dealt with this problem by allowing callers to specify the form of initialization. This solution works by handing over initialization to the *caller*, with the code that invokes the initialization merely providing storage.
 
 Guaranteed elision allows prvalues to be used to directly initialize any object. As such, syntax of the form `new(ptr) Typename(Function())` can defer the initialization of the object to `Function`. And so long as function returns a prvalue, no extraneous copies/moves are provoked.
 
@@ -248,7 +248,7 @@ v.inject_back([]{return Aggregate{1, 4, "a string"};});
 
 ### Pros and Cons { #library_injection_pro_con }
 
-This solves most indirect initialization problems, since it gives the user complete and direct control over object initialization. It does a better job than allocator_traits at allowing you to control access to constructor (public vs. private). And thanks to guaranteed elision, this is quite performance friendly, and it can even work with placement new.
+This solves most indirect initialization problems, since it gives the user complete and direct control over object initialization. It does a better job than `allocator_traits` at allowing you to control access to constructor (public vs. private). And thanks to guaranteed elision, this is quite performance friendly, and it can even work with placement new.
 
 One issue that this problem doesn't solve is dealing with template code that doesn't know or care if a type is an aggregate or non-aggregate. If the code wants to call a constructor or use list initialization if the constructor is not available, they must manually develop such an initialization function.
 
@@ -260,9 +260,9 @@ v.inject_back([]{return Aggregate{1, 4, "a string"};});
 v.emplace_back(1, 4, "a string");
 ````
 
-Over half of the text in the injection version is dedicated to extraneous text. If you have a `vector<T>`, then you know what type is going to be created. Yet the lambda must repeat the typename, either in the return expression or as the lambda's return type. The lambda prefix and so forth only adds to the verbosity.
+Over half of the text in the injection version is dedicated to extraneous noise. If you have a `vector<T>`, then you know what type is going to be created. Yet the lambda must repeat the typename, either in the return expression or as the lambda's return type. The lambda prefix and so forth only adds to the verbosity.
 
-Even in the ideal case of expression lambdas (a feature we don't have yet, mind you), this is the best we could do:
+Even in the ideal case of expression lambdas ([a feature we don't have yet](http://wg21.link/P0573), mind you), this is the best we could do:
 
 ````
 v.inject_back([] => Aggregate{1, 4, "a string"});
@@ -295,7 +295,7 @@ This will always create a 5-element vector, with each element storing 10.
 
 How visible this feature will be is somewhat questionable, due to factors discussed a bit later. But because it is built into all forms of initialization, visibility is irrelevant. Users who need to write an indirect initialization function cannot help but allow this syntax to work.
 
-One really important downside here is that this creates lots of complexity in the initialization rules, which are not known for being simple. What happens if the first two parameters to the initializer are `construct_init_t` and `list_init_t`? Should this mean list-initialization of the parameters that aren't of those types? Or does it mean constructor initialization, with the first argument to the constructor being of type `list_init_t`?
+One really important downside here is that this creates lots of complexity in the initialization rules, which are already not known for being simple. What happens if the first two parameters to the initializer are `construct_init_t` and `list_init_t`? Should this mean list-initialization of the parameters that aren't of those types? Or does it mean constructor initialization, with the first argument to the constructor being of type `list_init_t`?
 
 Also, how do these types behave on initialization? With a library-only solution, they behaved exactly like ordinary types. Once these types are part of general initialization, they start doing odd things:
 
@@ -453,7 +453,7 @@ In a previous section, [this example](#disuniform) was given to represent a dist
 
 This functions well enough. However, it would be nice if there was a way to have a single syntax that could initialize both. We know that making `vv.emplace_back(1, 2)` call the `initializer_list` constructor is a complete non-starter, as it breaks backwards compatibility (this example uses 2 elements specifically to demonstrate this). Therefore, we could entertain the second possibility: somehow make `va.emplace_back({l: 1, 2})` invoke aggregate initialization.
 
-It is generally unworkable to make a runtime-sized type like `initializer_list` directly interface with a compiler construct like an aggregate. The interaction of runtime-sized initialization along with default member initializers in aggregates makes the resulting code rather sub-optimal.
+It is generally unworkable to make a runtime-sized type like `initializer_list` directly interface with a compile-time construct like an aggregate. The interaction of runtime-sized initialization along with default member initializers in aggregates makes the resulting code rather sub-optimal.
 
 We do have one advantage: `{l: stuff}` is a new piece of syntax. As such, we are free to give it new rules.
 
@@ -475,7 +475,7 @@ The only difference is that `emplace_back` will provoke a copy from the values i
 
 This feature is a big change. While it is backwards compatible, adding new syntax rather than changing its meaning, it is still quite sizable.
 
-It is good to look at a solution of such complexity and ask if it results in something conceptually meaningful, or if it's just a hodge-podge of useful stuff slapped into a convenient syntax. Or to put it another way, what does all of this syntax *mean*?
+It is good to look at a solution of such complexity and ask if it results in something conceptually meaningful (and hopefully simple), or if it's just a hodge-podge of useful stuff slapped into a convenient syntax. Or to put it another way, what does all of this syntax *mean*?
 
 Unqualified list-initialization means to treat an object as a collection of heterogeneous values. This is what an aggregate is, after all; we simply extend that initialization to other types. This meaning justifies the prioritization of `initializer_list` constructors; such constructors initialize the type as a collection of values (homogeneous being a subset of heterogeneous), like a user-defined aggregate. We permit non-`initializer_list` constructors to be called, but they only make sense when the constructor's parameters map to internal object state.
 
