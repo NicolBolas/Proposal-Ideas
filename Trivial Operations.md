@@ -66,7 +66,7 @@ struct NoAssign
 
 The aforementioned code will compile with `NoAssign`, but it will invoke UB due to changing the value of a `const` object.
 
-What we really need is the equivalent of a copy constructor that constructs `NoAssign` as a copy of some memory.
+What we really need is the equivalent of a copy constructor that performs copy-construction on `NoAssign`, but from a piece of memory rather than a live `NoAssign` instance.
 
 ## Trivial Copy Assignment
 
@@ -87,7 +87,7 @@ struct NoAssign
 };
 ````
 
-To perform trivial copy assignment on `NoAssign` violates the prohibition on changing a `const` object. As such, `NoAssign` has `delete`d copy and move assignment operators. But `memcpy` will compile just fine, allowing us to encounter undefined behavior, even though it is statically detectable.
+To perform trivial copy assignment on `NoAssign` violates the prohibition on changing a `const` object. As such, `NoAssign` has `delete`d copy and move assignment operators. But `memcpy` will compile just fine, allowing us to encounter undefined behavior, even though the error is statically detectable.
 
 If we had a type-based trivial copying function, we could explicitly verify that the type was assignable, and if it is not issue a compile error. It could also be used to trivially copy arrays of data. `std::copy` could do so as well, but having a function specifically for trivial copies makes it clear to the reader that the code is going to merely call `memcpy` or `memmove`.
 
@@ -102,7 +102,7 @@ At present, trivial copying (as defined in [basic.types]/2-3) is only permitted 
 
 We want to make a small modification to these rules. Item 1 permits copying of a value representation of `T`, but it only recognizes this if those bytes started from an actual `T`. We should permit copying from memory which contains data that would be the value representation of a valid instance of the type `T`, regardless of how those bytes got there.
 
-All of the following standard library functions are defined in terms of trivial copy operations. As such, the source data must be as defined above. These functions should be part of the language support library [language.support], or otherwise should be required to be supported by any C++ implementation.
+All of the following standard library functions are defined in terms of trivial copy operations. As such, the source data must be as defined above. These functions should be part of the language support library [language.support], and added to the list of functions required to be supported by freestanding C++ implementations [compliance].
 
 ## Trivial Construction In-Place
 
@@ -124,9 +124,9 @@ Requires: `ptr` points to storage that contains `sizeof(T)` bytes of storage. `p
 
 Returns: A pointer to a `T` object which reuses the storage referenced by `ptr`. The object representation of `T` shall be exactly the same values that were stored in `ptr`, up to `sizeof(T)` bytes. `T` will be initialized as if by a trivial constructor call.
 
-Complexity: O(1) with respect to `sizeof(T)`. [note: Implementations are not allowed to implement this function by doing a pair of `memcpy`s.]
+Complexity: O(1) with respect to `sizeof(T)`. [note: Implementations are not allowed to implement these functions by doing a pair of `memcpy`s.]
 
-Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called. The storage starting at `ptr` and ending `sizeof(T)` bytes after this address are reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life].]
+Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable and CopyConstructible, then its default constructor will not be called. The storage starting at `ptr` and ending `sizeof(T)` bytes after this address are reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life].]
 
 ````
 template<typename T>
@@ -153,7 +153,7 @@ return ret;
 
 Requires: `count` shall not be zero. `ptr` shall contiguously store `count` value representations of valid instances of the type `T`. `ptr` must be aligned to at least `alignof(T)`.
 
-Complexity: O(1) with respect to `sizeof(T)`.
+Complexity: O(1) with respect to `sizeof(T)` and with respect to `count`. [note: Implementations are not allowed to implement these functions by doing a pair of `memcpy`s.]
 
 Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called.
 
@@ -261,7 +261,7 @@ These functions should not break compatibility, nor should they be constructs th
 
 # Possible Improvements
 
-Use `span` where appropriate. The new prototypes are:
+Use `span` and `byte` where appropriate. The new prototypes would be:
 
 ````
 //trivial_construct_in_place
@@ -271,14 +271,14 @@ T *trivial_construct_in_place(span<byte, sizeof(T)> data);
 template<typename T>
 const T *trivial_construct_in_place(span<const byte, sizeof(T)> data);
 
-//Array forms get a new name.
+//Array forms get a new name, since the function no longer needs an explicit count.
 template<typename T, ptrdiff_t Extent = dynamic_extent>
 span<T, Extent> trivial_construct_array_in_place(span<bytes,
-	Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> data);
+	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> data);
 	
 template<typename T, ptrdiff_t Extent = dynamic_extent>
 span<const T, Extent> trivial_construct_array_in_place(span<const bytes,
-	Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> data);
+	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> data);
 
 //trivial_copy_construct
 template<typename T>
@@ -290,11 +290,11 @@ constexpr void trivial_copy_assign(T &dst, span<const byte, sizeof(T)> src);
 
 template<typename T, ptrdiff_t Extent = dynamic_extent>
 constexpr void trivial_copy_assign(span<T, Extent> dst,
-	span<const byte, Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> src);
+	span<const byte, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> src);
 
 template<typename T, ptrdiff_t Extent = dynamic_extent>
 constexpr void trivial_copy_assign_relax(span<T, Extent> dst,
-	span<const byte, Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> src);
+	span<const byte, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> src);
 
 //trivial_copy_from
 template<typename T>
@@ -302,7 +302,7 @@ void trivial_copy_from(span<byte, sizeof(T)> dst, const T &src);
 
 template<typename T, ptrdiff_t Extent = dynamic_extent>
 void trivial_copy_from(span<T, Extent> dst,
-	span<bytes, Extent == dynamic_extent) ? dynamic_extent : (sizeof(T) * Extent))> dst, span<const T, Extent> src);
+	span<bytes, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> dst, span<const T, Extent> src);
 ````
 
 
