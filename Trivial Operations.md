@@ -273,12 +273,12 @@ const T *trivial_construct_in_place(span<const byte, sizeof(T)> data);
 
 //Array forms get a new name, since the function no longer needs an explicit count.
 template<typename T, ptrdiff_t Extent = dynamic_extent>
-span<T, Extent> trivial_construct_array_in_place(span<bytes,
-	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> data);
+span<T, Extent> trivial_construct_array_in_place(span<byte,
+	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> data);
 	
 template<typename T, ptrdiff_t Extent = dynamic_extent>
-span<const T, Extent> trivial_construct_array_in_place(span<const bytes,
-	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> data);
+span<const T, Extent> trivial_construct_array_in_place(span<const byte,
+	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> data);
 
 //trivial_copy_construct
 template<typename T>
@@ -290,19 +290,19 @@ constexpr void trivial_copy_assign(T &dst, span<const byte, sizeof(T)> src);
 
 template<typename T, ptrdiff_t Extent = dynamic_extent>
 constexpr void trivial_copy_assign(span<T, Extent> dst,
-	span<const byte, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> src);
+	span<const byte, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> src);
 
 template<typename T, ptrdiff_t Extent = dynamic_extent>
 constexpr void trivial_copy_assign_relax(span<T, Extent> dst,
-	span<const byte, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> src);
+	span<const byte, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> src);
 
 //trivial_copy_from
 template<typename T>
-void trivial_copy_from(span<byte, sizeof(T)> dst, const T &src);
+constexpr void trivial_copy_from(const T &src, span<byte, sizeof(T)> dst);
 
 template<typename T, ptrdiff_t Extent = dynamic_extent>
-void trivial_copy_from(span<T, Extent> dst,
-	span<bytes, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent))> dst, span<const T, Extent> src);
+constexpr void trivial_copy_from(span<const T, Extent> src, span<byte,
+	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> dst);
 ````
 
 
