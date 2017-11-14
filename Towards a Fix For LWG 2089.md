@@ -43,7 +43,7 @@ At the same time, the following is not an adequate solution either:
 
 > Effects: `::new((void *)p) U(std::forward<Args>(args)...)` if `is_aggregate_v<U>` is `false`, else `::new((void *)p) U{std::forward<Args>(args)...}`
 
-Ignoring that `is_aggregate/_v` is not an actual type trait, the problem here is dealing with this unusual circumstance<a name="agg-problem"/>:
+The problem here is dealing with this unusual circumstance<a name="agg-problem"/>:
 
 	struct Agg
 	{
@@ -160,8 +160,6 @@ C++17's features, particularly `if constexpr` makes the code for implementing th
 			static_assert(false, "Cannot initialize with parameters");
 		end
 	}
-
-Obviously, this requires the addition of an `is_aggreate` trait.
 
 The standard library could simply provide this function as a common indirect initialization utility tool. LWG 2089 would be resolved by having `std::initialize<T>` be used by:
 
