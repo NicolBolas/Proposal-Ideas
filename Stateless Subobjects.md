@@ -1,6 +1,5 @@
-% Zero sized Subobjects and Stateless Types, pre-release v6
-%
-% July 25, 2016
+Title: Zero sized Subobjects and Stateless Types, pre-release v6
+Date: July 25, 2016
 
 This proposal specifies the ability to declare member and base class subobjects which do not take up space in the objects they are contained within. It also allows the user to define classes which will always be used in such a fashion.
 
@@ -348,7 +347,7 @@ As such, blindly applying `zero_sized` to any empty layout type could have unple
 
 One solution considered was to just ignore the problem. The scope of the problem is such that it would only happen if:
 
-1. The user has created an empty layout type that gains state state through its object identity.
+1. The user has created an empty layout type that gains state through its object identity.
 
 2. The type is used as a zero sized subobject.
 

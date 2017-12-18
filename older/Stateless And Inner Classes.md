@@ -1,12 +1,12 @@
-# Stateless and Inner Classes
+Title: Stateless and Inner Classes
 
 This proposal describes two separate concepts, but they each contribute useful functionality to the other.
 
-## Stateless Classes
+# Stateless Classes
 
 Conceptually, a stateless class is a class which takes up no space when used as a direct member of another class. The purpose of this feature is to essentially require empty member optimization, but only where specified explicitly.
 
-### Definition
+## Definition
 
 This proposal does not yet suggest any particular syntax for defining a stateless class. The shorthand for this will be:
 
@@ -25,7 +25,7 @@ Stateless class definitions:
 
 In all other ways, a stateless class definition is equivalent to a non-stateless class definition.
 
-### Usage of Types
+## Usage of Types
 
 The `sizeof` a stateless class is not affected by the fact that it is stateless. [note: This means you get what you would for any empty class.]
 
@@ -39,7 +39,7 @@ If a class declares a NSDM of a stateless class type, or non-virtually derives f
 
 **Question:** Do we want stateless class NSDM's to take part in aggregate initialization? If we want stateless class members to effectively be transparent, to purely be implementation details, then we probably don't want them to be part of aggregate initialization. At the same time, stateless classes still exist and can still have constructors.
 
-### On Implementation {#stateless_impl}
+## On Implementation {#stateless_impl}
 
 Implementing stateless types should be easy in the compiler. A more difficult question is within the language.
 
@@ -49,15 +49,17 @@ This already comes up with regard to the [empty base optimization](http://en.cpp
 
 So the standard already deals with the concept of multiple, disparate objects in the same memory. Implementing stateless members only requires that the standard handle them at the NSDM level.
 
-## Inner Classes
+# Inner Classes
 
 The Java concept of an inner class is a nested class, all objects of which are bound to some instance of the containing class. The inner class can access members (static and non-static) of the containing class/instance as easily as it accesses its own. In this way, an inner class instance is effectively an extension of the outer class instance.
 
 This proposed C++ concept is similar (hence the name), but it does not allow for dynamic allocation of such objects the way one can in Java.[^2]
 
-### Definition
+From an OOP perspective, inheritance represents the concepts "is a" or "implemented in terms of", relative to the derived class. Containment represents "has a", relative to the containing class. The C++ version of inner classes represent the concept "part of"; inner class objects are distinct sub-parts of their containing class. They are different types, but they are types which are inseparable from their owning type.
 
-Inner classes can only be defined in the scope of a class; this class is called the *owning class*. [note: The owning class may itself be an inner class] This proposal does not yet suggest any particular syntax for defining inner classes. The shorthand for such definitions will be:
+## Definition
+
+Inner classes can only be defined in the scope of a class definition. The class which the inner class is directly nested within is called the *owning class*. [note: The owning class may itself be an inner class] This proposal does not yet suggest any particular syntax for defining inner classes. The shorthand for such definitions will be:
 
     <<inner>> class Classname { };
 	
@@ -65,99 +67,67 @@ Uses of inner classes that require the compiler to know that it is an inner clas
 
 Also, such syntax should be able to be used with the above stateless syntax. Neither implies the other, but it should be possible to use both when so desired.
 
-A class may only be derived from an inner class types if that class is itself an inner class. Also, when deriving from an inner class, the owning class of the derived class must be either the same class as the base class's owning class or a class non-virtually inherited[^3] from it. When deriving from an inner class type, the inheritance cannot be virtual.[^3]
+## Usage of Types
 
-Inner classes may derive from any available type, as normal. They may have any members, as normal, and they can use all other types, as normal.
-
-### Usage of Types
-
-Variables of inner class types can only be declared as NSDM's of a class. And the class which they are declared within must be either:
-
-* The direct owner of the inner class.
-* A class non-virtually inherited[^3] from the direct owner of the inner class.
-
-Inner class types cannot be used as the type in `new` expressions, nor can temporaries be made of them. Objects of inner class types cannot have their destructors explicitly called.
+Objects of inner class types can only be created as NSDM's of their owning class. This means that inner class types cannot be used as the type in `new` expressions, temporary-manifestation, or even base class subobjects. Objects of inner class types cannot have their destructors explicitly called.
 
 The standard library should have a template metafunction (and variable) for testing if a type is an inner class.
 
-Pointers and references to inner class types work as normal for any type.
+Pointers and references to inner class types otherwise work as normal for any type.
 
 Questions regarding layout compatibility, trivial copyability, and certain specific uses for inner classes are discussed in the [implementation](#inner_impl) section. This is because these behaviors materially affect how the compiler actually makes these things work. The behavior, based on looking at the limits of implementations, is as follows:
 
 * Stateless inner class members do not affect layout compatibility.
 * Inner class members, stateless or not, affect trivial copyability in the same way as any other type. [note: The class declaring the member is not trivially copyable only if the member type is not trivially copyable.]
-* Objects which have stateful inner class members cannot be trivial types. [note: They can still be trivially copyable.]
+* Objects which have stateful inner class members cannot be trivial types. [note: They can still be trivially copyable, but their non-copy/move constructors can never be trivial.]
 * Inner class members can be copied/moved exactly as any other type. [note: Specifically, if a stateful inner class member is trivially copyable, it should be legal to do a `memcpy(dest, src, sizeof(T))` on it into another inner class member of the same type.]
 
 In all other ways, inner class types work just like regular types.
 
-### Names and Access
+## Names and Access
 
-The inner class of a class is implicitly friends of its owning class class. This happens recursively up the inner class hierarchy. [note: An inner class of an inner class is friends with both its immediately owning class and the class that owns that one.]
+Inner classes are nested classes and therefore follow the general access rules of nested classes. That is, they can access their owning class names and have all of the rights of any member of their owning class. Similarly, the owning class does not necessarily have rights to the inner class members.
 
-Name lookup through inner classes can retrieve members of their owning classes as though they were derived from them. However, actual base classes have priority over owning class, when names conflict. The more recent owners have priority over less recent owning classes.
+There is a substantial change when it comes to inner class accessing their owning classes: accessing non-static members.
 
-Pointers and references to inner class members can be converted to point to their owning class instance via `static_cast`. Such conversions can also be implicit, much like converting from a derived class to a base class. [note: The reverse conversion is not allowed. You have to access the specific member yourself.]
+Within members of an inner class, and any friends of that inner class type, pointers/references to that inner class type are implicitly convertible to an instance of their owning class. This works recursively up the inner class ownership hierarchy to the first non-inner class owner.
 
-If a pointer/reference to an inner class names a member of an owning class (accessibility willing) and attempts to access it through that pointer/reference, the pointer/reference will first be converted to the proper type (and value) via `static_cast`. [note: This means that one can actually access the public members of an owning class through just a pointer/reference to the inner class. But not the private ones, because that breaks accessibility.]
+This conversion is equivalent to a base class conversion, and it affects name lookup in the same way as a base class [note: The conversion in particular applies to `this`]. However, base class instances have name lookup priority over owning class instances. More recent inner class owners have priority over less recent inner class owners.
 
-The exceptions to this access are within inner class constructors, NSDM initializers, and destructors. Because inner classes must be members, their owning class may not have been constructed yet. [note: If the object is a member of a class derived from its owning type, then the owning type will be constructed before the inner class member.] As such, they should not be able to modify their owning object before they have been fully constructed. Nor should they be able to modify their owning object in their destructor, since the lifetime of that object has ended.
+The name lookup can be scoped with a class name to ensure that the correct member is found.
 
-### On Implementations {#inner_impl}
+For code which does not have non-private access to an inner class, the inner class is not implicitly convertible to its owning class. Such code only has access to the object's public interface.
 
-Implementing inner classes is something of a concern. In Java, this is trivial; just stick a `this` pointer into the inner class object. Garbage collection makes everything work out.
+Pointers and references to inner class members can be explicitly converted to point to their owning class instance via `static_cast`. The reverse conversion is not allowed.
 
-Such an implementation is possible in C++ (minus the GC). Indeed, there are class frameworks that implement this today. However, such implementations cause a number of problems, beyond the syntactic difficulties of using those frameworks:
+The exceptions to this access are within inner class constructors, NSDM initializers, and destructors. Because inner classes must be members, their owning class has not been constructed yet. As such, they should not be able to modify their owning object before they have been fully constructed. Nor should they be able to modify their owning object in their destructor, since the lifetime of that object has ended.
+
+Obviously, this can be enforced for constructors and destructors only. They can call other member functions, but these will have undefined behavior if they access any aspects of the owning object instance.
+
+## On Implementations {#inner_impl}
+
+Implementing inner classes is something of a concern. The fundamental operation that separates an inner class from other class instances is the ability to convert a pointer/reference to an instance of itself to an instance of its direct owning class. Such a mechanism can be recursive, if the direct owner is itself an inner class.
+
+In Java, this conversion is trivial; when the inner class instance is created, you stick a hidden `this` pointer into the inner class object. Garbage collection makes lifetime issues work out, since it is referencing its owning type.
+
+Such an implementation is possible in C++ (minus the GC). Indeed, there are class frameworks that implement this today. However, "hidden `this` implementations cause a number of problems, beyond the syntactic difficulties of using those frameworks:
 
 * It breaks trivial copyability, as the hidden `this` pointer shouldn't be copied or moved.
 * It introduces overhead where none might be necessary.
 
 Only a compiler is capable of implementing inner classes without these flaws (where possible). Even so, compiler implementations lead to some problems.
 
-It is possible to implement stateless inner classes with zero overhead in the owning class. This could be done easily enough by having the pointer to the stateless inner class member be the same pointer value as its owning object. This allows the compiler to instantly know how to convert from an inner class instance to its owning instance.
+It is possible to implement stateless inner classes with zero overhead in the owning class. This could be done easily enough by having the pointer to the stateless inner class member be the same address as its owning object. Thus, the fundamental operation is just casting a pointer to a new type.
 
-This would work even when the stateless inner class is a member of a derived class of its owner. The compiler can statically convert the pointer to the derived class to a pointer to the base class (since virtual inheritance is not allowed) when accessing the inner class member.
+Where implementations get complicated is with stateful inner classes. Because each member has its own state, the conversion from `Outer::Inner*` to `Outer*` is no longer a simple typecast. It depends on exactly where that member is within its object, which has to do with the class's memory layout.
 
-Then, there is this even more complex case:
+Therefore, for each stateful inner class member, the compiler may[^3] need to have access to some data (typically a byte offset) which is used to convert `this` from `Outer::Inner*` to `Outer*`. For multiple nestings of stateful inner classes, each level can have its own offset to get to the next level.
 
-	class Base
-	{
-	public:
-		<<inner>> <<stateless> class In1
-		{ int GetBase() const {return baseVar;}  };
+[^3]: If a stateful inner class instance is used exactly once in the owning type, the compiler can pre-compute the offset and store it statically. Since inner class instances can only be created as member subobjects of their owners, if there is only one such instance created, then there is only one offset for that entire type, so it need not be stored. This is a useful optimization, but it does not change any of the rules here, much like devirtualization does not make a virtual class trivially copyable.
 
-	private:
-		int baseVar;
-	};
-	
-	class Derived : public Base;
-	{
-	public:
-		<<inner>> <<stateless>> class In2 : public Base::In1
-		{
-			int GetBase2() const {return GetBase();}
-		};
-		
-		In2 acc;
-		
-	private:		
-		int deriVar;
-	};
-	
-	
-The key to remember here is that both `Base` and `Derived` have non-stateless NSDMs, so they both take up space. And thus, the pointer to `Base` is not required to be the same as the pointer to `Derived`.
+The ultimately question is where this offset is stored.
 
-Even with this complexity, things still work. For `In2::GetBase2`, the compiler recognizes that `GetBase` is in the base class of `Derived::In2`. But it also realizes that this base class is an inner class. So it converts the `this` pointer of type `Derived::In2*` into a `Derived*`, then converts it into a `Base*`, then converts it into an `Base::In1*`. The same thing happens for calling `acc.GetBase` directly, or any expression that converts an `Derived::In2*` into `Base::In1*`.
-
-All of these conversions are static, based on compile-time offsets. Therefore, one can obtain a pointer/reference to `acc` and manipulate it. The compiler knows the type of the object, and it can see that it is an inner class type, and do the appropriate math to make it all work.
-
-Where implementations get complicated is with stateful inner classes. Because each member has its own state, the conversion from `Outer::Inner*` to `Outer*` is no longer a simple typecast. It depends on exactly where that member is within its object.
-
-Therefore, for each stateful inner class member, the compiler must have access to some data (typically a byte offset) which is used to convert `this` from `Outer::Inner*` to `Outer*`. For multiple nestings of stateful inner classes, each level has its own offset to get to the next level.
-
-The question is where this offset is stored.
-
-One thing is certain: the offset must be stored someplace that is accessible with just a pointer to `this`. After all, users may have only a pointer/reference to an inner class member, and they have every reason to expect that this will function. In such a case, the only pieces of information the compiler has are the class definitions and `this`.
+The fundamental operation of inner classes takes as input exactly one value: a pointer/reference to the inner class subobject. Therefore, whatever mechanism we come up with must be able to use `this` *alone* to find the offset.
 
 We are left with two alternative implementations. The offset could be stored within the inner class itself, in a hidden member (ala vtable pointers). Or the offset could be stored in the direct owning class, in memory that is directly adjacent to the instance.
 
@@ -179,7 +149,7 @@ The outer class cannot be *trivial* however, since its default constructor (and 
 
 Trivial copyability is probably more generally useful than the ability to aggregate stateful inner classes into arrays.
 
-## Uses and Deficiencies
+# Uses and Deficiencies
 
 Empty member optimization, and guaranteed empty base optimization outside of standard layout, has been something that users have wanted for quite some time. 
 
@@ -200,4 +170,3 @@ Then again, it would also break encapsulation. Because template inner classes ar
 
 [^2]: This is as much due to lifetime issues as anything else. Java is garbage collected, so it is reasonable to have a `this` pointer hidden within an inner class that points to the owning instance. And thus, the owning instance will not be collected until after its inner class objects are no longer in use. In C++, object lifetimes don't work that way, so we restrict this functionality to the one scenario where inner object lifetimes can be guaranteed. That is, direct members of the owning class.
 
-[^3]: The non-virtual part is for ease-of-implementation reasons. It is not yet clear if a static byte offset would be sufficient with implementations of virtual inheritance. It is also unclear if some alternative implementation would also be possible that could work with virtual inheritance.

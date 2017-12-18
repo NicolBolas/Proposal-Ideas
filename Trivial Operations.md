@@ -1,6 +1,4 @@
-% Trivial Operations
-%
-%
+Title: Trivial Operations
 
 The C++ concepts of trivially copyable and trivial types are very useful for low-level code. However, employing them in a number of circumstances often require heavy use of casting, the use of more opaque functions like `memcpy`, or even relying on undefined behavior.
 
@@ -152,6 +150,8 @@ return ret;
 ````
 
 Requires: `count` shall not be zero. `ptr` shall contiguously store `count` value representations of valid instances of the type `T`. `ptr` must be aligned to at least `alignof(T)`.
+
+Returns: A pointer to an array of `count` objects of type `T`.
 
 Complexity: O(1) with respect to `sizeof(T)` and with respect to `count`. [note: Implementations are not allowed to implement these functions by doing a pair of `memcpy`s.]
 
