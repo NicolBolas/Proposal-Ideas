@@ -42,6 +42,8 @@ Note that `new(mem) Type` is not guaranteed to *preserve* the contents of `mem`.
 
 What we need is a function which will begin the lifetime of `Type`, but preserve the contents of the memory it is being built within. However, it also needs to do this only for types where it is reasonable to be able to do so.
 
+P0593 has some interaction with this part of the proposal. However, it does not make this part unnecessary in all cases, such as when converting from a `U` to a `T` in-situ. P0593 can only convert from an array of bytes into a `T`. Similarly, `std::bitcast` cannot perform an in-situ object conversion while preserving the value representation.
+
 ## Trivial Copy Construct
 
 When reading memory from an arbitrary source whose value representation matches a C++ object, the typical idiom for accessing it is to do this:
@@ -65,6 +67,8 @@ struct NoAssign
 The aforementioned code will compile with `NoAssign`, but it will invoke UB due to changing the value of a `const` object.
 
 What we really need is the equivalent of a copy constructor that performs copy-construction on `NoAssign`, but from a piece of memory rather than a live `NoAssign` instance.
+
+This behavior is similar from `std::bitcast`. The difference is that `bitcast` copies from a live object `T` to a prvalue of type `U`. This conversion is explicitly from a byte array to a prvalue of type `U`.
 
 ## Trivial Copy Assignment
 
@@ -91,16 +95,14 @@ If we had a type-based trivial copying function, we could explicitly verify that
 
 # Design
 
-## Language Changes
+## Common
 
 At present, trivial copying (as defined in [basic.types]/2-3) is only permitted in two cases:
 
 1. Copying from a `T` to an arbitrary byte array and back to a `T`.
 2. Copying from one `T` to another `T`.
 
-We want to make a small modification to these rules. Item 1 permits copying of a value representation of `T`, but it only recognizes this if those bytes started from an actual `T`. We should permit copying from memory which contains data that would be the value representation of a valid instance of the type `T`, regardless of how those bytes got there.
-
-All of the following standard library functions are defined in terms of trivial copy operations. As such, the source data must be as defined above. These functions should be part of the language support library [language.support], and added to the list of functions required to be supported by freestanding C++ implementations [compliance].
+All of the functions here will instead work in a fashion similar to `std::bitcast`. Namely, the functions which take a sequence of bytes and create/copy to one or more `T`'s have undefined behavior if the input sequence of bytes does not represent legal object representation for the destination object type `T`. And if those bytes could have multiple object representations in `T`, then which one is returned is unspecified.
 
 ## Trivial Construction In-Place
 
@@ -109,28 +111,45 @@ These functions construct an object in place, but they do so in such a way that 
 * Trivially default constructible.
 * Trivially copyable and CopyConstructible.
 
+As such, these functions rely on the following concept:
+
+````
+template<typename T>
+concept TrivialInPlaceConstruct<T> =
+	(is_trivially_copyable_v<T> && is_copy_constructible_v<T>) ||
+	is_trivially_default_constructible_v<T>
+````
+
 `T` will be initialized as if by a trivial constructor call: either the trivial default constructor or the trivial copy constructor.
 
 ````
 template<typename T>
-T *trivial_construct_in_place(void *ptr);
+	requires TrivialInPlaceConstruct<T>
+T *trivial_construct_in_place(span<byte, sizeof(T)> data);
+
 template<typename T>
-const T *trivial_construct_in_place(const void *ptr);
+	requires TrivialInPlaceConstruct<T>
+const T *trivial_construct_in_place(span<const byte, sizeof(T)> data);
 ````
 
-Requires: `ptr` points to storage that contains `sizeof(T)` bytes of storage. `ptr` must be aligned to at least `alignof(T)`. `ptr` shall store the value representation of a valid instance of the type `T`.
+Requires: `data.data()` shall be aligned to at least `alignof(T)`. `data` shall store the value representation of a valid instance of the type `T`.
 
-Returns: A pointer to a `T` object which reuses the storage referenced by `ptr`. The object representation of `T` shall be exactly the same values that were stored in `ptr`, up to `sizeof(T)` bytes. `T` will be initialized as if by a trivial constructor call.
+Returns: A pointer to a `T` object which reuses the storage referenced by `data`. The object representation of `T` shall be exactly the same bytes that were stored in `data`. `T` will be initialized as if by a trivial constructor call.
 
 Complexity: O(1) with respect to `sizeof(T)`. [note: Implementations are not allowed to implement these functions by doing a pair of `memcpy`s.]
 
-Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable and CopyConstructible, then its default constructor will not be called. The storage starting at `ptr` and ending `sizeof(T)` bytes after this address are reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life].]
+Remarks: If `T` is trivially copyable and CopyConstructible, then it will be created as if by its copy constructor. The storage designated by `data` reused for `T`, so any such objects in that storage have their lifetimes ended. [note: This means all proscriptions about using pointers/references/names to the old object(s) apply [basic.life].]
 
 ````
-template<typename T>
-T *trivial_construct_in_place(void *ptr, size_t count);
-template<typename T>
-const T *trivial_construct_in_place(const void *ptr, size_t count);
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+	requires TrivialInPlaceConstruct<T>
+span<T, Extent> trivial_construct_array_in_place(span<byte,
+	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> data);
+	
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+	requires TrivialInPlaceConstruct<T>
+span<const T, Extent> trivial_construct_array_in_place(span<const byte,
+	Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> data);
 ````
 
 Equivalent to:
@@ -149,13 +168,13 @@ for(size_t i = 0; i < count; ++i)
 return ret;
 ````
 
-Requires: `count` shall not be zero. `ptr` shall contiguously store `count` value representations of valid instances of the type `T`. `ptr` must be aligned to at least `alignof(T)`.
+Requires: `data.size()` shall not be zero. `data.size()` shall be a multiple of `sizeof(T)`. `data` shall contiguously store `count` value representations of valid instances of the type `T`. `data.data()` must be aligned to at least `alignof(T)`.
 
-Returns: A pointer to an array of `count` objects of type `T`.
+Returns: A pointer to an array of `data.size() / sizeof(T)` objects of type `T`.
 
-Complexity: O(1) with respect to `sizeof(T)` and with respect to `count`. [note: Implementations are not allowed to implement these functions by doing a pair of `memcpy`s.]
+Complexity: O(1) with respect to `sizeof(T)` and with respect to `data.size()`. [note: Implementations are not allowed to implement these functions by doing a pair of `memcpy`s.]
 
-Remarks: This function does not participate in overload resolution unless `T` is either trivially default constructible or both trivially copyable and CopyConstructible. If `T` is trivially copyable, then its default constructor will not be called.
+Remarks: If `T` is trivially copyable, then its default constructor will not be called.
 
 ## Trivial Copy Construct
 
@@ -163,19 +182,18 @@ This function constructs a prvalue via trivial copy construction, from a region 
 
 ````
 template<typename T>
-constexpr T trivial_copy_construct(const void *ptr);
+	requires is_trivially_copayble_v<T> && is_copy_constructible_v<T>
+constexpr T trivial_copy_construct(span<const byte, sizeof(T)> data);
 ````
 
-Requires: `ptr` points to storage that contains at least `sizeof(T)` bytes of memory. `ptr` shall store the value representation of a valid instance of the type `T`.
+Requires: `data` shall store the value representation of a valid instance of the type `T`.
 
-Returns: A prvalue of type `T` whose value representation is equivalent to the storage currently in `ptr`.
-
-Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is CopyConstructible.
+Returns: A prvalue of type `T` whose value representation is equivalent to the storage currently in `data`.
 
 Note that the implementation of this function must take into account the following possibility:
 
 ````
-new(ptr) auto(trivial_copy_construct<T>(ptr));
+new(ptr) auto(trivial_copy_construct<T>(data.data()));
 ````
 
 That would effectively be the equivalent of `trivial_construct_in_place`.
@@ -184,10 +202,19 @@ That would effectively be the equivalent of `trivial_construct_in_place`.
 
 These functions perform trivial copy assignment to and/or from live instances of `T`. These functions require that `T` is trivially copyable. When copying to existing `T` objects, the functions also require that `T` is Assignable.
 
+As such, they rely on the following concept definition:
+
+````
+template<typename T>
+concept TrivialCopyAssignable =
+	is_trivially_copyable_v<T> && is_copy_assignable_v<T>
+````
+
 These are effectively convenience functions, wrappers around `memcpy` and `memmove` that do some basic type-checking to ensure that they are only used on types that support the operations.
 
 ````
 template<typename T>
+	requires TrivialCopyAssignable<T>
 constexpr void trivial_copy_assign(T &dst, const T &src);
 ````
 
@@ -195,38 +222,37 @@ Requires: `dst` and `src` shall be distinct objects. Neither `dst` nor `src` sha
 
 Effects: Equivalent to `memcpy(&dst, &src, sizeof(T));`.
 
-Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
-
 ````
 template<typename T>
-constexpr void trivial_copy_assign(T &dst, const void *src);
+	requires TrivialCopyAssignable<T>
+constexpr void trivial_copy_assign(T &dst, span<const byte, sizeof(T)> src);
 ````
 
-Requires: The object `dst` shall be a distinct range of memory from `src` + `sizeof(T)`. `src` shall contain at least `sizeof(T)` bytes. `src` shall store the value representation of a valid instance of the type `T`. `dst` shall not be a base class subobject.
+Requires: The object `dst` shall be a distinct range of memory from `src`. `src` shall store the value representation of a valid instance of the type `T`. `dst` shall not be a base class subobject.
 
 Effects: Equivalent to `memcpy(&dst, src, sizeof(T));`.
 
-Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
-
 ````
-template<typename T>
-constexpr void trivial_copy_assign(T *dst, const void *src, size_t count);
-````
-
-Requires: `count` shall be greater than 0. `dst` shall not be a base class subobject. `dst` shall point to a sequence of at least `count` objects of type `T`. `src` shall contiguously store `count` value representations of valid instances of the type `T`. [note: Per the use of `memcpy`, this function implicitly requires that the address range of `dst` to `dst + count` must not overlap the range of `src` to `src + count * sizeof(T)`.]
-
-Effects: Equivalent to `memcpy(dst, src, sizeof(T) * count);`. [note: It therefore has the same overlapping restrictions of `std::memcpy`.]
-
-Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
-
-````
-template<typename T>
-constexpr void trivial_copy_assign_relax(T *dst, const void *src, size_t count);
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+	requires TrivialCopyAssignable<T>
+constexpr void trivial_copy_assign(span<T, Extent> dst,
+	span<const byte, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> src);
 ````
 
-Requires: `count` shall be greater than 0. `dst` shall not be a base class subobject. `dst` shall point to a sequence of at least `count` objects of type `T`. `src` shall contiguously store `count` value representations of valid instances of the type `T`.
+Requires: `dst` shall not point to a base class subobject of type `T`. `dst.size()` shall not be zero. `src` shall contiguously store `dst.size() * sizeof(T)` value representations of valid instances of the type `T`. [note: Per the use of `memcpy`, this function implicitly requires that the address range of `dst` to `dst + count` must not overlap the range of `src` to `src + count * sizeof(T)`.]
 
-Effects: Equivalent to `std::memmove(dst, src, sizeof(T) * count)`. [note: `memmove` lacks the overlap restrictions of `std::memcpy`.]
+Effects: Equivalent to `memcpy(dst.data(), src.data(), src.size());`. [note: It therefore has the same overlapping restrictions of `std::memcpy`.]
+
+````
+template<typename T, ptrdiff_t Extent = dynamic_extent>
+	requires TrivialCopyAssignable<T>
+constexpr void trivial_copy_assign_relax(span<T, Extent> dst,
+	span<const byte, Extent == dynamic_extent ? dynamic_extent : (sizeof(T) * Extent)> src);
+````
+
+Requires: `dst.size()` shall not be zero. `dst` shall not point to a base class subobject of type `T`. `src` shall contiguously store `count` value representations of valid instances of the type `T`.
+
+Effects: Equivalent to `std::memmove(dst.data(), src, sizeof(T) * count)`. [note: `memmove` lacks the overlap restrictions of `std::memcpy`.]
 
 Remarks: This function does not participate in overload resolution unless `T` is a trivially-copyable type and is Assignable.
 
