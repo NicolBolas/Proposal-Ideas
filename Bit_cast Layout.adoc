@@ -1,0 +1,67 @@
+= Byte Array Layout for bit_cast
+
+== Abstract
+
+`bit_cast` converts the object representation of one object to that of another. However, it requires the two objects to be of the exact same size. This may not be the case when dealing with ``std::array``s, as `std::array<std::byte, N>` is not required to be `N` bytes in size. This proposal suggests mechanisms for dealing with this issue.
+
+== Motivation
+
+`std::bit_cast` is a very useful tool for converting object represetnations. And a useful aspect of object representation conversion is converting an object to/from a byte array whose size is the size of that object.
+
+The most obvious way to convert from some type `T` to a byte array might be `bit_cast<std::byte[sizeof(T)], T>`. Of course, this doesn't work, since it would have to return a prvalue array, which is not allowed.
+
+Instead, we would use `bit_cast<std::array<std::byte, sizeof(T)>, T>`. There's just one problem: `std::array<std::byte, N>` is not required to be `N` bytes in size. As such, the above instantiation is not required to be portable across compilers.
+
+=== Is this a real problem?
+
+It is important to note that this problem is hypothetical. While implementations are _permitted_ wide variance with regard to the layout of `std::array`, implementations in the wild don't do anything with it. For most ABIs, a struct containing a single byte array member will take up the same space as the array member.
+
+As such, this is merely about ensuring the validity of code and providing a strong guarantee that converting from/to bytewise arrays works as intended. It is not meant to make possible something that is impossible.
+
+== Proposals
+
+There are many ways to fix this issue. The suggestions below are ordered from the most general solutions and language-invasive to the most specific.
+
+Note: when `std::byte` is used below, this should be read to include the other "byte-like" types: `char` and `unsigned char`.
+
+=== A: Make arrays first-class types
+
+This whole issue only comes up because we need `std::array` to begin wtih. And we need `std::array` because C++ language arrays don't work like regular object types. You can't pass them without losing their array status, you can't return them as prvalues, etc. This prevents `bit_cast` from effectively working with them.
+
+So, if we change the language so that arrays work like other values, we would have no need to use `std::array<std::byte>`. And thus, its layout would be irrelevant (at least in this regard).
+
+=== B: Fixed layout for single-value structs
+
+The reason why we cannot assume that `std::array<std::byte, sizeof(T)>` is the same size as `T` is because the C++ language gives implementations lots of leeway in deciding struct layouts. We can reign in some of this variance.
+
+A general-yet-narrow solution would be to say that, for any standard-layout struct `T` that contains a single NSDM, the size of `T` shall be the same as the size of that NSDM.
+
+Whether this could apply to standard layout unions is unknown, but the rules would have to be more complex due to alignment issues.
+
+Note that to make this solve the `std::array` issue, we would also have to explicitly define that `std::array<T, N>` shall have a single NSDM of type `T[N]` (when `N` > 0).
+
+=== C: Fixed layout for std::array<T>
+
+If we cannot guarantee this behavior for any single-member standard layout struct, the C++ standard does have the power to guarantee it for `std::array<T, N>`. If `N` is greater than 0, and `T` is standard-layout, then `std::array<T, N>` shall be required to be exactly `sizeof(T) * N`.
+
+Compared to the previous case, this has the downside of blessing a standard library type with special behavior that a user cannot write a type to take advantage of.
+
+=== D: Fixed layout for std::array<std::byte>
+
+The most limited layout-based solution is to only bless `std::array<std::byte, N>` with the proper layout property. We would declare that this specific type, for all `N` greater than 0, shall be of size `std::byte[N]`.
+
+This allows us to do the proper ``bit_cast``ing as needed, but only for byte-wise conversion.
+
+=== E: bit_cast always works with byte arrays.
+
+Instead of changing the layout rules for any structure, we simply redefine `bit_cast` for certain special cases. We can give it specializations for conversions to/from `std::array<std::byte, N>` objects, which require that `sizeof(Src/Dst)` is the same as `N`, even though `sizeof(std::array<std::byte, N>)` may not be that size.
+
+We could also make such conversions into distinct functions: `bit_cast_to_array` and `bit_cast_from_array`.
+
+=== F: Add a byte array trivial copying function.
+
+In the most broad solution A, we decided that the problem was that we couldn't use language arrays in the same way as other objects. In this most narrow solution, we instead decide that the problem is that `bit_cast` _wants_ to create object types and take them as a whole.
+
+To solve this, we could have a pair of `bit_cast`-like function specifically for copying through byte arrays. But they would deal with byte arrays via `std::span<std::byte, N>` rather than via a byte array object. For copies from byte arrays, the function would return a prvalue of the desired type, but copies into byte arrays would take the `span` as an output parameter.
+
+Essentially, it would be a type-safe version of `memcpy`.
