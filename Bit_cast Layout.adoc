@@ -2,15 +2,15 @@
 
 == Abstract
 
-`bit_cast` converts the object representation of one object to that of another. However, it requires the two objects to be of the exact same size. This may not be the case when dealing with ``std::array``s, as `std::array<std::byte, N>` is not required to be `N` bytes in size. This proposal suggests mechanisms for dealing with this issue.
+`bit_cast` converts the object representation of one object to that of another. However, it requires the two objects to be of the exact same size. This may not be the case when dealing with `std::array`s, as `std::array<std::byte, N>` is not required to be `N` bytes in size. This proposal suggests mechanisms for dealing with this issue.
 
 == Motivation
 
 `std::bit_cast` is a very useful tool for converting object represetnations. And a useful aspect of object representation conversion is converting an object to/from a byte array whose size is the size of that object.
 
-The most obvious way to convert from some type `T` to a byte array might be `bit_cast<std::byte[sizeof(T)], T>`. Of course, this doesn't work, since it would have to return a prvalue array, which is not allowed.
+The most obvious way to convert from some type `T` to a byte array might be `std::bit_cast<std::byte[sizeof(T)], T>`. This doesn't work, since it would have to return a prvalue array, which is not allowed.
 
-Instead, we would use `bit_cast<std::array<std::byte, sizeof(T)>, T>`. There's just one problem: `std::array<std::byte, N>` is not required to be `N` bytes in size. As such, the above instantiation is not required to be portable across compilers.
+Instead, we would use `std::bit_cast<std::array<std::byte, sizeof(T)>, T>`. There's just one problem: `std::array<std::byte, N>` is not required to be exactly `N` bytes in size. As such, the above instantiation is not required to be portable across compilers.
 
 === Is this a real problem?
 
@@ -48,9 +48,9 @@ Compared to the previous case, this has the downside of blessing a standard libr
 
 === D: Fixed layout for std::array<std::byte>
 
-The most limited layout-based solution is to only bless `std::array<std::byte, N>` with the proper layout property. We would declare that this specific type, for all `N` greater than 0, shall be of size `std::byte[N]`.
+The most limited layout-based solution is to only bless `std::array<std::byte, N>` with the proper layout property. We would declare that this specific type, for all `N` greater than 0, shall be of size `std::byte[N]``.
 
-This allows us to do the proper ``bit_cast``ing as needed, but only for byte-wise conversion.
+This allows us to do the proper `bit_cast`ing as needed, but only for byte-wise conversion.
 
 === E: bit_cast always works with byte arrays.
 

@@ -1,0 +1,124 @@
+= Type Expressions
+
+== Abstract
+
+Types in C{pp} have increasingly become a focus in the language. However, there are many idioms based on type traits that are just incredibly and needlessly bulky to use. This leads to concept definitions and type computations that are really long and difficult to read. Judicious use of expressions on types can improve this state of affairs, thus making such code much more readable.
+
+== Motivation
+
+C{pp} essentially already has type expressions, though we don't really think of them that way. We have sequences of tokens which, when taken together, result in a type that is not necessarily specified by any one of them. For example, `const T` takes the type `T` and returns a `const`-qualified version of it (which may be the same type `T` if it were already `const`-qualified). `T*` takes the type `T` and returns a pointer-to-`T`. Etc.
+
+Yet all of these type computations can be done through type traits as well. Consider the following equivalent series of statements.
+
+.Current Type Expressions
+[cols="a,a"]
+|===
+|Type traits notation|Standard notation
+|
+``
+std::add_pointer_t<T> pT = nullptr;
+std::add_pointer_t<std::add_const_t<T>> pcT = nullptr;
+std::add_const_t<std::add_pointer_t<T>> cpT = nullptr;
+``
+|
+``
+T* pT = nullptr;
+T const* pcT = nullptr;
+T * const cpT = nullptr;
+``
+|===
+
+
+An argument could be made that the traits notation makes a clear distinction between a pointer to a `const T` and a `const` pointer to a non-`const` `T`. But whatever advantage that might give is undone by its massive _verbosity_.
+
+Adding `const`, pointers, and references to types are frequent enough operations that it makes sense that there are dedicated "type expressions" to compute them, rather than relying on very verbose type traits.
+
+As type programming in C{pp} has grown and developed, we can identify other type transformations that are extremely common. These common transformations are also quite verbose in traits form.
+
+The goal of this proposal is to identify common type transformations and modify the language to permit them.
+
+One need not look far in even the C++20 standard to find type trait transformations are used with incredible frequency. `std::remove_cvref` is used so often that you could proabably shorten the standard by a page or two if you could get rid of all text of the form, "let U be `std::remove_cvref_t<T>`" and simply use something like `~T`.
+
+Here are some examples of how type expressions can improve code:
+
+.Suggested Type Expressions
+[cols="a,a"]
+|====
+|Type traits notation|Proposed type expression
+
+|`std::remove_reference_t<T>` | `&T`
+|`std::remove_pointer_t<T>` | `+*T+`
+|`std::remove_cv_t<T>` | `-T`
+|`std::remove_cvref_t<T>` | `~T`
+|`std::decay_t<T>` | `!T`
+|`std::same_as<T, U>` | `T == U`
+|`!std::same_as<T, U>` | `T != U`
+
+|``
+template<class T, class U>
+concept not-same-as =
+// exposition only
+!same_as<remove_cvref_t<T>, remove_cvref_t<U>>;
+``
+| Unnecessary, as we can just do `~T != ~U` anywhere we want to use this exposition concept.
+
+| Constraints: `is_constructible_v<T, U>` is true, `is_same_v<remove_cvref_t<U>, in_place_t>` is
+false, and `is_same_v<remove_cvref_t<U>, optional>` is false.
+| Constraints: all of the following are true: `is_constructible_v<T, U>`, `in_place_t != ~U`, and `optional != ~U`.
+
+|Let `U` be the type `remove_cvref_t<T>`.
+
+_Mandates_: For the first overload, `is_constructible_v<T, const U&>` is true. For the second overload, `is_constructible_v<T, U&>` is true. For the third overload, `is_constructible_v<T, U>` is true.
+|_Mandates_: For the first overload, `is_constructible_v<T, const (~T)&>` is true. For the second overload, `is_constructible_v<T, (~T)&>` is true. For the third overload, `is_constructible_v<T, ~T>` is true.
+|====
+
+=== Is reflection enough?
+
+No. The thing this proposal combats is not ability, but _verbosity_. The existing standard library metaprogramming infrastructure can already do all of the expression computations we are suggesting. What is being suggested is a way to do them that is easier to write and read due to the frequent need we have for them.
+
+== Proposal
+
+The goal here is to remove various type trait cruft from code, particularly in constraint definitions and requires clauses. But we also need to recognize that many users may not immediately understand what a particular type operator is doing. So we need to be frugal in how many operators we create and what operators we assign to them.
+
+Ideally, it would be fairly easy to guess what a type operator would do. Failing that, it should be easy to remember which operators do what.
+
+=== Available operators
+
+We don't want to have a _lot_ of operators on types, as the meaning of these operators becomes increasingly abstract. Also, binary type operators don't make sense for most of our use cases, as these would represent type combinations. So this proposal will consider the following unary operators for potential use in type expressions: +, -, *, &, ~, and !.
+
+The operators `+` and `-` are typically associated with numbers, declaring that the number is negative (unary `+` has no normal effect, but libraries sometimes use it for a purpose). That being said, there is some recent history of using these operators to explicitly convert non-capturing, non-generic lambdas into function pointers, so unorthodox meanings for such operators are not unheardof. https://stackoverflow.com/q/17822131/734069
+
+The prefix operators `*` and `&` are associated with dereferencing and referencing. Conceptually, one moves closer to being an actual object, while the other moves farther away from being an object. Again, various libraries have assigned novel functionality to these unary operators, but we don't want to create too much confusion as to what is going on in type expressions.
+
+Fortunately, when `*` and `&` are used as suffixes for types, they have very specific and well-understood meanings. That is, they already work in type expressions as suffixes. So it makes some sense to apply them as type prefixes with similar-yet-different meaning.
+
+The `~` and `!` operators are associated with negation, one bitwise and the other boolean. However, the binary negation operator is very rarely utilized, so repurposing it would not be too eggregious.
+
+There are two binary operators that should also be considered: `==` and `!=`. We will discuss the possible meaning of these at present.
+
+=== Desired operations
+
+`remove_cvref` was only added in C++20, but we can see how frequently it appears throughout the C++ standard. It appears within constraints as well as internal standards text. So having an expression that converts a type to its most basic form would certainly be useful. This is particularly useful in light of the fact that `std::same_as` treats `T` and `const T` as different types (which they are).
+
+Even so, it would also be useful to have the two component operations of `remove_cvref` as independent operators: `remove_cv` and `remove_reference`. The latter sees frequent use in the standard.
+
+The concept `std::same_as` is also extremely frequently used to ask whether two types are identical. It makes perfect sense to just be able to ask this of any two types using `==` and `!=`.
+
+The only concern with the latter is the issue of `same_as` vs. `convertible_to`. This is the issue that stopped requires expressions from being able to just say `+{ expr } -> typename+`. However, since we are clearly using ``==` comparison, it is highly unlikely that a user would expect that this would test implicit convertibility instead of similarity. So this issue should not be a problem for us.
+
+=== Proposed operators and precedence
+
+As such, we propose the following operators:
+
+Prefix `*` and `&` mean `remove_pointer` and `remove_reference`, respectively. This attempts to mirror the behavior of these operators as suffixes, which are equivalent to `add_pointer` and `add_reference`.
+
+Prefix `-` means to remove cv-qualifiers.
+
+Prefixes `~` and `!` mean `remove_cvref` and `decay` respectively. While the prefix operator sequences `-&` or `&-` would have the effect of `remove_cvef`, it is still useful to have a single operator do it. Because of the similarities between these two operations, they are assigned to the two inversion operators, with `!` being used for `decay` because it is less capable of 
+
+As an aside, because of the incredibly common use of `remove_cvref`, we really should have a name dof this concept. That is, `remove_cvref_t<T>` can be called the "X" form of the type `T`, similar to how we can say that the decayed form of `T` is `decay_t<T>`. I would suggest that we call it the "unadorned" form.
+
+
+
+
+As for precedence rules, prefix operators should bind more tightly than suffix operators. And they should have no precedence at all; they should apply from right to left (inner-most to outer-most). Therefore, `&*T*` means to remove a pointer, then remove the reference, then add a pointer to the resulting type.

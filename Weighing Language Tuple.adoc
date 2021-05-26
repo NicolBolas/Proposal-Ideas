@@ -1,0 +1,120 @@
+= Weighing Language and Library Tuple
+
+== Abstract
+
+Tuples are a useful concept in many languages, but C{pp}'s `std::tuple` leaves much to be desired. This proposal looks at a hypothetical language-based tuple, then looks at what features would need to be added to C{pp} in order to get as close as possible to being able to create such a type within the language rather than as a language feature.
+
+== A matter of tuples
+
+Tuples are a useful construct. While a normal struct can serve many of the functions of a tuple, the ability to create such a type arbitrarily and access its members by index rather than through a name offers many advantages. Some aggregations of values simply do not have a need to have a logical name for each value, and this is especially true of temporary aggregations used in a local scope. Furthermore, tuples are more maleable, being able to be constructed by simple metaprogramming expressions and manipulated by template programming.
+
+C++11 introduced `std::tuple`, a template class that to the best of the language's ability at the time provides a library implementation of a tuple type. While it is quite useful in its domain, the cumbersome nature of accessing and defining them impedes widespread use of them in places where they would make sense.
+
+As such, there is a desire for a "language tuple", a mechanism within the language itself to create and manipulate tuples. Building such a type directly into the language has the advantage of allowing us to maximize the ease of using such types.
+
+The disadvantage of a language tuple is that it's now part of the language. And in some way, it feels like a failure of the language that you couldn't implement a user-friendly tuple in the language itself.
+
+This paper will look at the potential advantages of a language tuple (primarily from a usability standpoint) and then explore what would need to change in the language to allow for a library implementation of such features.
+
+=== Compactness of creation
+
+Ideally, creating a tuple would be as trivial as:
+
+```
+auto tpl = {5.0f, 22, "some string"s};
+```
+
+Let us assume for the remainder of this document that using a braced-init-list in this fashion would work. That is, let us ignore any questions of ambiguiuty with list initialization and so forth. A true language tuple creation syntax would likely need some indicator added to the braced-init-list to say that it is a tuple, but this paper will primarily focus on the ideal scenario.
+
+The best a library tuple can get is essentially what we already have in C++17. Through class template argument deduction, tuple initialization from a series of expressions can be as simple as:
+
+```
+auto tpl = std::tuple{5.0f, 22, "some string"s};
+```
+
+This adds 10 characters over just the braced-init-list version. A ``using std::tuple;`` declaration can reduce it to 5 characters, and with modules, such declarations become much more usable.
+
+So when it comes to tuple creation, the library tuple syntax is pretty close to being ideal. And if we look at actually workable models for language tuples (ie: needing to apply some syntax to the braced-init-list to create a tuple), the library tuple syntax would probably only be a few characters longer.
+
+==== References and forwarding
+
+The above assumes that we are creating a tuple of objects. However, if we consider the possibility of creating a tuple of references, things change.
+
+In C++, the name of an object variable is both the object and a reference to the object, depending on how that name gets used. As such, it is impossible to know if ``{some_name}`` is intended to be a tuple containing a copy of the object or a tuple containing a reference to it. Worst, we wouldn't really want this answer to change just because `some_name` happens to be a reference variable, since the whole idea being references is that they act like a different name for the object.
+
+This is a problem for a language tuple. This is _not_ a problem for a library tuple, since we always have the option to forgo CTAD and specify the type of the members explicitly. If we wanted that in a language tuple, we would need to invent a new syntax to specify the tuple member types. And in the end, it would be nearly as wordy as ``std::tuple``.
+
+The only case where a language tuple might have an advantage is that, if you explicitly provide some types to a template, CTAD cannot be used. A language tuple can come up with a way to avoid this; it could even have a short-hand way to say to deduce a particular argument, but explicitly provide another. For example:
+
+```
+auto tpl = <auto, auto&, ...>{5, an_int, a_float, "string"};
+```
+
+``auto`` here works like ``auto`` in terse template function syntax. This means that ``auto&`` will specifically deduce a reference type. ``...`` means to deduce the rest of the parameters.
+
+Of course, such syntax may also be able to be applied to CTAD circumstances, with near equivalent verbosity.
+
+=== Layout compatibility and triviality
+
+A language tuple can be standard layout by fiat (to the extent that its members are), and their layouts can exactly match that of an equivalent struct definition. They can also be trivially copyable by fiat (again, to the extent of its members).
+
+By contrast, ``std::tuple`` implementations are free to play around with layout, and often do so. And their triviality only extends to their destructors.
+
+If we wanted to write a library tuple that matched the layout and triviality of an equivalent struct definition, that would be very difficult to implement under C++20 rules. Adding the ability to declare variables of a type parameter pack type makes this easier to implement.
+
+Even so, mandating the layout of ``std::tuple`` after 10+ years of implementation variance would likely be a non-starter. So if this functionality were deemed important for a tuple, we would need to create a new type.
+
+=== Convertibility
+
+Ideally, we should want a tuple to behave as its member types do. If tuple A's members are all implicitly convertible to tuple B's members, than A should be implicitly convertible to B.
+
+``std::tuple`` does this mostly OK. The only downside is an oddity, outlined by P2163. One might expect that a tuple containing a single value would be convertible in exactly the same way as its member type, but if that member type is a fundamental type, it is not.
+
+For example, if a type has a user-defined conversion into a ``double``, you could pass an instance of that type to function that takes an ``int``. The language can perform the user-defined conversion to `double`, then use a standard conversion into an `int`.
+
+However, if you have a type with a user-defined conversion to a `tuple<double>`, you cannot pass that type to a function that takes `tuple<int>`. While `tuple` itself can make that conversion, the standard doesn't allow for more than one user-defined conversion in a single sequence.
+
+In theory, a language tuple could avoid this, as such conversions need not be treated as user-defined. And no library tuple could fix it without allowing more multiple user-defined conversions in a sequence.
+
+However, this is a pretty minor issue. A more interesting and useful language tuple feature would be to take a page from P2142's book and consider whether arbitrary types should be convertible to/from such a tuple. After all, a struct with all publicly accessible members is conceptually no different from a tuple containing members of the same or convertible types. So it would not be unreasonable to treat them as such.
+
+This is something a language tuple could do by fiat. Let us lay down some specific rules to make things easier.
+
+The term "decomposible type" refers to any type `T` which:
+
+1. is an aggregate
+2. can be used in structured binding
+3. can be aggregate initialized by exactly as many members as its structured binding decomposition requires
+4. the sequence of types the typet decomposes to in structed binding is a valid sequence of types for aggregate initialization.
+
+The last two rules ensure the reversibility of aggregate initialization and decomposition. We want the structured binding decomposition of such types to exactly match their aggregate members. Exactly how "matches" works for user-defined structured binding declarations is something that can be ironed out (or we just forbid user-defined structured binding entirely).
+
+Given this, we can declare that a language tuple is:
+
+1. implicitly convertible from/to any decomposible type whose decomposed element types exactly match the members of the tuple.
+2. implicitly convertible from/to any decomposible type whose decomposed element types are exactly equal or implicitly convertible to/from the tuple member types.
+3. explicitly convertible from/to any decomposible type whose decomposed element types are explicitly convertible to/from the tuple member types.
+
+Implementing these rules in a library type would require the ability to detect that a type is decomposible, enumerate its element types, iterate through the decomposible object's members, and for each one fetch the corresponding member.
+
+All of these would likely be solved by the various reflection/reification proposals. Outside of that, we would need a special type trait and a mechanism that works to enumerate the element types and values in a decomposible type. The trait would require new language changes, but the other mechanisms would be covered by something like P1858: Generalized pack declaration and usage.
+
+=== Basic member access
+
+This is the #1 pain point when dealing with ``std::tuple``: accessing an element of the tuple. A language tuple can use array indexing with any integral constant expression. However, since ``[]`` cannot provide a template parameter (unless you use the unpleasant ``.operator[]`` syntax), library tuples are far less capable.
+
+There have been proposals for allowing parameters to functions to be constant expressions. Of course, this particular case is one of the primary reason why such proposals encounter problems: the return type needs to be potentially different for every value of that parameter you pass. This makes the function a de-facto template function, thus rendering constexpr parameters as syntactic sugar for writing and calling a template.
+
+=== Member iteration
+
+Doing something for each member of a tuple is the #2 pain point of tuples. And unlike the #1 pain point, we will need a specialized solution regardless of whether the tuple is a language or library feature. P1306: Expression Statements would be adequate, but P1858's proposed ability to convert values into packs and expand them also is helpful.
+
+Both of these proposals key off of the existing decomposition mechanisms to allow user-defined types to be iterable. As such, both language and library tuples ought to be equally capable of being iterable.
+
+=== Named members
+
+One of the advantages of using a braced-init-list to create a language-tuple is that, thanks to designated initializer syntax, we can also allow such a list to create a tuple that gives its members names. And through compiler magic, we can allow conversion between different kinds of tuples.
+
+The kind of language changes that would be needed would be to 
+
+
