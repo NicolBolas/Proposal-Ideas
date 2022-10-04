@@ -98,25 +98,25 @@ There are two binary operators that should also be considered: `==` and `!=`. We
 
 === Desired operations
 
-`remove_cvref` was only added in C++20, but we can see how frequently it appears throughout the C++ standard. It appears within constraints as well as internal standards text. So having an expression that converts a type to its most basic form would certainly be useful. This is particularly useful in light of the fact that `std::same_as` treats `T` and `const T` as different types (which they are).
+`remove_cvref` was only added in C++20, but we can see how frequently it appears throughout the C{pp} standard. It appears within constraints as well as internal standards text. So having an expression that converts a type to its most basic form would certainly be useful. This is particularly useful in light of the fact that `std::same_as` treats `T` and `const T` as different types (which they are).
 
 Even so, it would also be useful to have the two component operations of `remove_cvref` as independent operators: `remove_cv` and `remove_reference`. The latter sees frequent use in the standard.
 
 The concept `std::same_as` is also extremely frequently used to ask whether two types are identical. It makes perfect sense to just be able to ask this of any two types using `==` and `!=`.
 
-The only concern with the latter is the issue of `same_as` vs. `convertible_to`. This is the issue that stopped requires expressions from being able to just say `+{ expr } -> typename+`. However, since we are clearly using ``==` comparison, it is highly unlikely that a user would expect that this would test implicit convertibility instead of similarity. So this issue should not be a problem for us.
+The only concern with the latter is the issue of `same_as` vs. `convertible_to`. This is the issue that stopped requires expressions from being able to just say `+{ expr } -> typename+`. However, since we are clearly using `+==+` comparison, it is highly unlikely that a user would expect that this would test implicit convertibility instead of similarity. So this issue should not be a problem for us.
 
 === Proposed operators and precedence
 
 As such, we propose the following operators:
 
-Prefix `*` and `&` mean `remove_pointer` and `remove_reference`, respectively. This attempts to mirror the behavior of these operators as suffixes, which are equivalent to `add_pointer` and `add_reference`.
+Prefix `*` and `&` mean `remove_pointer` and `remove_reference`, respectively. This attempts to mirror the behavior of these operators as suffixes, which are equivalent to `add_pointer` and `add_reference`. Note that if the type is not a pointer/reference, it will pass through unchanged.
 
 Prefix `-` means to remove cv-qualifiers.
 
 Prefixes `~` and `!` mean `remove_cvref` and `decay` respectively. While the prefix operator sequences `-&` or `&-` would have the effect of `remove_cvef`, it is still useful to have a single operator do it. Because of the similarities between these two operations, they are assigned to the two inversion operators, with `!` being used for `decay` because it is less capable of 
 
-As an aside, because of the incredibly common use of `remove_cvref`, we really should have a name dof this concept. That is, `remove_cvref_t<T>` can be called the "X" form of the type `T`, similar to how we can say that the decayed form of `T` is `decay_t<T>`. I would suggest that we call it the "unadorned" form.
+As an aside, because of the incredibly common use of `remove_cvref`, we really should have a name for this transformation. This would be similar to how we can say that `+decay_t<T>+` is the "decayed form of `T`", we should have some special name for the removed-cvref form of a type. I would suggest that we call it the "unadorned" form.
 
 
 

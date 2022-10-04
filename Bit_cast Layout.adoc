@@ -26,7 +26,7 @@ Note: when `std::byte` is used below, this should be read to include the other "
 
 === A: Make arrays first-class types
 
-This whole issue only comes up because we need `std::array` to begin wtih. And we need `std::array` because C++ language arrays don't work like regular object types. You can't pass them without losing their array status, you can't return them as prvalues, etc. This prevents `bit_cast` from effectively working with them.
+This whole issue only comes up because we need to use `std::array` specifically. And we need `std::array` because C++ language arrays don't work like regular object types. You can't pass them without losing their array status, you can't return them as prvalues, etc. This prevents `bit_cast` from effectively working with them.
 
 So, if we change the language so that arrays work like other values, we would have no need to use `std::array<std::byte>`. And thus, its layout would be irrelevant (at least in this regard).
 
@@ -42,7 +42,7 @@ Note that to make this solve the `std::array` issue, we would also have to expli
 
 === C: Fixed layout for std::array<T>
 
-If we cannot guarantee this behavior for any single-member standard layout struct, the C++ standard does have the power to guarantee it for `std::array<T, N>`. If `N` is greater than 0, and `T` is standard-layout, then `std::array<T, N>` shall be required to be exactly `sizeof(T) * N`.
+If we cannot guarantee this behavior for any single-member standard layout struct, the C{pp} standard does have the power to guarantee it for `std::array<T, N>`. If `N` is greater than 0, and `T` is standard-layout, then `std::array<T, N>` shall be required to be exactly `sizeof(T) * N`.
 
 Compared to the previous case, this has the downside of blessing a standard library type with special behavior that a user cannot write a type to take advantage of.
 

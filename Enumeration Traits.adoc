@@ -1,0 +1,181 @@
+= Enumeration Traits and Metatools
+
+== Abstract
+
+Enumerations in C{pp} are often treated as an object which can only take on the value of one of the enumerators. While strong typing of enumerations makes it difficult to accidentally convert a number into an enumeration, there are currently no mechanisms to ensure that the value of any particular enum (such as loaded from a file or across the network) corresponds to a valid enumerator. Here, we propose a number of tools to allow a user to test such things.
+
+== Motivation
+
+There are a number of use cases that these tools are intended to support.
+
+=== Validation
+
+There are a number of circumstances where an integer value representing an enumerator of some enumeration is acquired from outside of a particular system. This frequently happens with files or network traffic. If the source is in some way unreliable (human-provided data, unreliable networks, etc), a degree of error checking would be useful.
+
+Existing tools can be used to check to see if the value would fit inside the underlying type of the enuemration. However, that alone does not mean that the value is one of the enumerators of the enumeration. If the value must be an enumerator, then user code needs to check to see if it actually is one.
+
+Of course, enumerators are ephemeral constructs in C++. There is no simple mechanism in the language to ask if an integer value is equal to one enumerator in an enumeration.
+
+But enumerations are not always distinct values. Sometimes, the enumerators in an enumeration represent individual bits in a bitfield. In these cases, the test is not that a value must match one of the enumerators, but instead that a value must not have any bits that are not set by one of the enumerators.
+
+=== Runtime Lookup
+
+Enumerations conceptually provide a way of mapping from a C{pp} identifier to an integral constant expression. This mapping however is ephemeral; it only exists within the compiler. It is sometimes useful to apply this mapping at runtime (or even at compile-time through a function call).
+
+If a user is entering data into a text file, it is sometimes useful to want to allow the user to specify enumerators directly rather than using meaningless integers. Similarly, if a user has entered an inappropriate enumerator (an enumerator that is part of the enumeration, but is not usable in that particular scenario), it is useful to be able to report an error by name rather than by a meaningless number.
+
+
+
+== Design
+
+=== The Introspection Question
+
+This proposal can be re-framed as simply providing a high-level interface over the ability to perform introspection across the enumerators of an enumeration type. As such, the question can be asked: can't users just build these tools with C{pp}'s (eventual) introspection API?
+
+While all of these tools can be constructed via introspection, there are two factors that make us still want these tools. The most obvious being that introspection is a large feature that will take many years to standardize, while these tools are much smaller in scope and therefore are easier to standardize. The other reason is that, even in the face of introspection, higher-level tools that cover common cases will still be desirable.
+
+These tools can be thought of like many aspects of the standard library: tools that the user could implement on their own, but it is useful enough to many people that they should just exist. The difference is that, at present, the language backing for these library features is unavailable. But the desire still remains.
+
+To avoid pushing too far into introspection territory, this design is focused on asking questions of enumerations that are more complicated than simply asking for a list of enumerator names and values. While the latter is how these will be implemented, the questions themselves are about using such a list to produce answers to useful questions.
+
+=== On Freestanding Implementations
+
+C++23's new rules allowing for freestanding implementations to partially implement headers helps make this feature available for freestanding implementations, while also permitting users of full implementations to have more useful tools.
+
+To facilitate this, all of this functionality will be provided by a new header, `+<enum_traits>+`.
+
+=== Enumeration Traits
+
+[source,c++]
+----
+//Freestanding
+template<typename E>
+concept enumeration = is_enum_v<E>;
+----
+
+`enumeration` has the additional semantic requirement that `E` is a complete enumeration.
+
+The `+enum_traits+` class below is used to ask questions about an enumeration type. Some of the traits are repeats of existing type-traits, but they are collected here for completeness.
+
+[source,c++]
+----
+//Freestanding
+template<enumeration E>
+struct enum_traits
+{
+    using underlying_type = std::underlying_type_t<E>;
+
+    static constexpr bool is_scoped = std::is_scoped_enum_v<E>;
+
+    constexpr static bool is_empty;
+
+    constexpr static underlying_type min_value;
+
+    constexpr static underlying_type max_value;
+
+    constexpr static underlying_type bitmask;
+
+    constexpr static bool is_dense;
+
+    constexpr static bool are_enumerators_unique;
+};
+----
+
+These aliases and values have the following meanings (where not stated above):
+
+`+is_empty+`: True if `+E+` has no enumerators.
+
+`+min_value+`: Holds the smallest value of any enumerator in `+E+`. If `+E+` has no enumerators, this value is 0.
+
+`+max_value+`: Holds the largest value of any enumerator in `+E+`. If `+E+` has no enumerators, this value is 0.
+
+`+bitmask+`: Holds the bitwise OR of all of the enumerator values in the enumeration.
+
+`+is_dense+`: True if there is an enumerator for every value in the range [`+min_value+`, `+max_value+`]. If `+E+` has no enumerators, this will be false.
+
+`+are_enumerators_unique+`: True if every enumerator has a value distinct from every other enumerator in the enumeration. If `E` has no enumerators, this will be false.
+
+=== Enumeration Value Testing Tools
+
+These `constexpr` functions take values of the enumeration type and do tests against the enumerators in the enumeration. Using some of these functions outside of constant evaluation may cause tables of data to be brought into the executable.
+
+Note that if `optional` were to become part of freestanding, then the functions below which use it may also be part of freestanding implementations.
+
+[source,c++]
+----
+//Freestanding
+template<enumeration E>
+constexpr bool is_enumerator_value(E v);
+----
+
+Returns: true if `v` matches the value of an enumerator of `E`; false otherwise. Always returns false if `E` has no enumerators.
+
+[source,c++]
+----
+//Freestanding
+template<enumeration E>
+constexpr bool is_enumerator_unique(E v);
+----
+
+Preconditions: `is_enumerator_value(v)` is true.
+
+Returns: true if `v` matches exactly one enumerator in `E`; false otherwise.
+
+[source,c++]
+----
+template<enumeration E, integral Value>
+constexpr optional<E> enum_cast(Value v);
+----
+
+Returns: `static_cast<E>(v)` if:
+
+ - `v` is within the closed range specified by `enum_traits<E>::min_value` and `enum_traits<E>::max_value`, and
+ - `is_enumerator_value(static_cast<E>(v))` is true.
+
+Returns `nullopt` otherwise.
+
+[source,c++]
+----
+template<enumeration E, enumeration E2>
+constexpr optional<E> enum_cast(E2 v);
+----
+
+Returns: `static_cast<E>(v)` if:
+
+ - `v` is within the closed range specified by `enum_traits<E>::min_value` and `enum_traits<E>::max_value`, and
+ - `is_enumerator_value(static_cast<E>(v))` is true.
+
+Returns `nullopt` otherwise.
+
+=== Enumeration Mapping
+
+These `constexpr` functions deal with mapping enumerator values to string names and back.
+
+Note: `StringRefType` is some type representing an unmodifiable, contiguous, narrow-character string. `string_view` would be preferable, but it is not a required part of a freestanding implementation, and some of these functions should be. If `string_view` becomes freestanding, it should be used. Until then, `StringRefType` should be read as `char const*`.
+
+[source,c++]
+----
+//Freestanding
+template<enumeration E>
+constexpr StringRefType enum_to_enumerator_firstname(E v);
+----
+
+Returns: If `is_enumerator_value(v)` is true, then a string providing the name of the enumerator for the value `v`; a null pointer otherwise. If `is_enumerator_unique(v)` is false, the name returned is the first such name in declaration order. The returned string shall be considered a pointer to a string literal (for purposes of template instantiation, for example).
+
+[source,c++]
+----
+//Freestanding
+template<enumeration E>
+constexpr bool is_enumerator_name(StringRefType str);
+----
+
+Returns: True if the string names one of the enumerators of `E`; false otherwise.
+
+[source,c++]
+----
+template<enumeration E>
+constexpr optional<E> enumerator_name_to_enum(string_view str);
+----
+
+Returns: the value of the enumerator of `E` named by `str`, or `nullopt` if no such enumerator exists in `E`.
+
