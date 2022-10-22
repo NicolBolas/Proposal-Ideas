@@ -1,4 +1,4 @@
-= Enumeration Traits and Metatools
+= Enumeration Traits and Meta-tools
 
 == Abstract
 
@@ -12,7 +12,7 @@ There are a number of use cases that these tools are intended to support.
 
 There are a number of circumstances where an integer value representing an enumerator of some enumeration is acquired from outside of a particular system. This frequently happens with files or network traffic. If the source is in some way unreliable (human-provided data, unreliable networks, etc), a degree of error checking would be useful.
 
-Existing tools can be used to check to see if the value would fit inside the underlying type of the enuemration. However, that alone does not mean that the value is one of the enumerators of the enumeration. If the value must be an enumerator, then user code needs to check to see if it actually is one.
+Existing tools can be used to check to see if the value would fit inside the underlying type of the enumeration. However, that alone does not mean that the value is one of the enumerators of the enumeration. If the value must be an enumerator, then user code needs to check to see if it actually is one.
 
 Of course, enumerators are ephemeral constructs in C++. There is no simple mechanism in the language to ask if an integer value is equal to one enumerator in an enumeration.
 
@@ -22,9 +22,7 @@ But enumerations are not always distinct values. Sometimes, the enumerators in a
 
 Enumerations conceptually provide a way of mapping from a C{pp} identifier to an integral constant expression. This mapping however is ephemeral; it only exists within the compiler. It is sometimes useful to apply this mapping at runtime (or even at compile-time through a function call).
 
-If a user is entering data into a text file, it is sometimes useful to want to allow the user to specify enumerators directly rather than using meaningless integers. Similarly, if a user has entered an inappropriate enumerator (an enumerator that is part of the enumeration, but is not usable in that particular scenario), it is useful to be able to report an error by name rather than by a meaningless number.
-
-
+If a user is entering data into a text file, it is sometimes useful to want to allow the user to specify enumerator names directly rather than using meaningless integers. Similarly, if a user has entered an inappropriate enumerator (an enumerator that is part of the enumeration, but is not usable in that particular scenario), it is useful to be able to report an error by name rather than by a meaningless number.
 
 == Design
 
@@ -34,7 +32,7 @@ This proposal can be re-framed as simply providing a high-level interface over t
 
 While all of these tools can be constructed via introspection, there are two factors that make us still want these tools. The most obvious being that introspection is a large feature that will take many years to standardize, while these tools are much smaller in scope and therefore are easier to standardize. The other reason is that, even in the face of introspection, higher-level tools that cover common cases will still be desirable.
 
-These tools can be thought of like many aspects of the standard library: tools that the user could implement on their own, but it is useful enough to many people that they should just exist. The difference is that, at present, the language backing for these library features is unavailable. But the desire still remains.
+These tools can be thought of like many aspects of the standard library: tools that the user could implement on their own, but are useful enough to many people that they should just exist. The difference is that, at present, the language feature for building these library features is unavailable. But the desire still remains.
 
 To avoid pushing too far into introspection territory, this design is focused on asking questions of enumerations that are more complicated than simply asking for a list of enumerator names and values. While the latter is how these will be implemented, the questions themselves are about using such a list to produce answers to useful questions.
 
@@ -91,7 +89,7 @@ These aliases and values have the following meanings (where not stated above):
 
 `+bitmask+`: Holds the bitwise OR of all of the enumerator values in the enumeration.
 
-`+is_dense+`: True if there is an enumerator for every value in the range [`+min_value+`, `+max_value+`]. If `+E+` has no enumerators, this will be false.
+`+is_dense+`: True if there is an enumerator for every value in the range [`+min_value+`, `+max_value+`]; false otherwise. [Note: if `+E+` has no enumerators, this will be false.]
 
 `+are_enumerators_unique+`: True if every enumerator has a value distinct from every other enumerator in the enumeration. If `E` has no enumerators, this will be false.
 
@@ -125,17 +123,6 @@ Returns: true if `v` matches exactly one enumerator in `E`; false otherwise.
 ----
 template<enumeration E, integral Value>
 constexpr optional<E> enum_cast(Value v);
-----
-
-Returns: `static_cast<E>(v)` if:
-
- - `v` is within the closed range specified by `enum_traits<E>::min_value` and `enum_traits<E>::max_value`, and
- - `is_enumerator_value(static_cast<E>(v))` is true.
-
-Returns `nullopt` otherwise.
-
-[source,c++]
-----
 template<enumeration E, enumeration E2>
 constexpr optional<E> enum_cast(E2 v);
 ----
@@ -160,7 +147,7 @@ template<enumeration E>
 constexpr StringRefType enum_to_enumerator_firstname(E v);
 ----
 
-Returns: If `is_enumerator_value(v)` is true, then a string providing the name of the enumerator for the value `v`; a null pointer otherwise. If `is_enumerator_unique(v)` is false, the name returned is the first such name in declaration order. The returned string shall be considered a pointer to a string literal (for purposes of template instantiation, for example).
+Returns: If `is_enumerator_value(v)` is true, then a string providing the name of the enumerator for the value `v`; a null pointer otherwise. If `is_enumerator_unique(v)` is false, the name returned is the first enumerator name in declaration order which has the value `v`. The returned string shall be considered a pointer to a string literal (for purposes of template instantiation, for example).
 
 [source,c++]
 ----
